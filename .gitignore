@@ -1,0 +1,28 @@
+# Data files
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.h5
+*.hdf5
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# R
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment / secrets
+.env
+*.log
