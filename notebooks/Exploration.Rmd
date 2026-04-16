@@ -1,0 +1,10 @@
+---
+title: "Data Exploration"
+output: html_document
+---
+
+```{r}
+merged23_24 <- read.csv("../data/raw/MERGED2023_24_PP.csv")
+fos1920_2021 <- read.csv("../data/raw/FieldOfStudyData1920_2021_PP.csv")
+```
+
