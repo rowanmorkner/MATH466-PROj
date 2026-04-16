@@ -4,7 +4,79 @@ output: html_document
 ---
 
 ```{r}
-merged23_24 <- read.csv("../data/raw/MERGED2023_24_PP.csv")
-fos1920_2021 <- read.csv("../data/raw/FieldOfStudyData1920_2021_PP.csv")
+library(here)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+
+# The persistent panel is built by notebooks/pre_process.R -- one row
+# per (school, cohort year) for schools that report data in every year.
+panel <- read_csv(here("data", "processed", "panel.csv"),
+                  show_col_types = FALSE)
 ```
 
+## Phase 1 -- coverage map
+
+Not every variable is populated in every cohort year (e.g. `MD_EARN_WNE_P10`
+only exists for cohorts whose 10-yr post-entry window has closed). Before
+any analysis we need to know which (year, variable) cells have real data.
+
+```{r}
+# The ~15 "core panel" variables tied to the research question:
+# expensive-school premium controlling for selectivity. Everything
+# downstream in the EDA operates on this subset rather than all 74 cols.
+CORE_VARS <- c(
+  "MD_EARN_WNE_P6", "MD_EARN_WNE_P10",
+  "NPT4",
+  "SAT_AVG", "ADM_RATE",
+  "C150", "CDR3", "RPY_3YR_RT",
+  "GRAD_DEBT_MDN",
+  "UGDS", "PCTPELL", "FIRST_GEN",
+  "CONTROL", "PREDDEG", "HBCU"
+)
+
+# Percent non-null by (year, variable) over the persistent panel.
+coverage <- panel |>
+  select(year, all_of(CORE_VARS)) |>
+  pivot_longer(-year, names_to = "variable", values_to = "value") |>
+  group_by(year, variable) |>
+  summarise(pct_nonnull = mean(!is.na(value)) * 100, .groups = "drop")
+
+# Order variables so the "always-populated" ones sit at the bottom and
+# the sparse / heavily-lagged ones sit at the top for readability.
+var_order <- coverage |>
+  group_by(variable) |>
+  summarise(avg_cov = mean(pct_nonnull)) |>
+  arrange(avg_cov) |>
+  pull(variable)
+
+# Heatmap: cohort year on x, variable on y, cell shaded by % non-null.
+ggplot(coverage, aes(x = year,
+                     y = factor(variable, levels = var_order),
+                     fill = pct_nonnull)) +
+  geom_tile(color = "white", linewidth = 0.3) +
+  scale_fill_gradient(low = "grey95", high = "steelblue",
+                      limits = c(0, 100)) +
+  scale_x_continuous(
+    breaks = seq(min(coverage$year), max(coverage$year), by = 2)
+  ) +
+  labs(
+    title = "Core variable coverage across the persistent panel",
+    subtitle = "% of schools with non-null value, by cohort year",
+    x = "cohort year", y = NULL, fill = "% non-null"
+  ) +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+
+Overall coverage by year -- the top rows are the best candidates for
+the cross-sectional slice in Phase 3.
+
+```{r}
+coverage |>
+  group_by(year) |>
+  summarise(mean_pct_nonnull = mean(pct_nonnull), .groups = "drop") |>
+  arrange(desc(mean_pct_nonnull)) |>
+  print(n = 10)
+```
