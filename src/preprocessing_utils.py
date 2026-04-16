@@ -49,13 +49,20 @@ KEEP_COLS = {
     # Net price -- public and private are mutually exclusive by CONTROL,
     # so they get coalesced into a single NPT4 column below.
     "cost": ["NPT4_PUB", "NPT4_PRIV"],
-    # 150%-time completion rate, 4yr and <4yr pooled. Mutually exclusive
-    # by institution type; coalesced into a single C150_POOLED below.
-    "completion": ["C150_4_POOLED_SUPP", "C150_L4_POOLED_SUPP"],
+    # 150%-time completion rate, 4yr and <4yr. Mutually exclusive by
+    # institution type; coalesced into a single C150 column below.
+    # Using the plain (not _POOLED_SUPP) variants because the pooled/
+    # suppressed versions are only filled in the most-recent cohort
+    # file, while C150_4 / C150_L4 are populated across most cohorts.
+    "completion": ["C150_4", "C150_L4"],
     # Median completer debt (principal + 10-yr monthly payment).
     "debt": ["GRAD_DEBT_MDN", "GRAD_DEBT_MDN10YR"],
-    # 3-year repayment rate as the single repayment signal.
-    "repayment": ["RPY_3YR_RT"],
+    # Repayment signals. CDR3 (3-yr cohort default rate) is populated
+    # across nearly every cohort 1997-2023 and serves as the long-range
+    # panel metric. RPY_3YR_RT (3-yr repayment rate) only covers
+    # ~2009-2016 but gives a different-methodology check in overlap
+    # years; keeping both lets the research question pick.
+    "repayment": ["RPY_3YR_RT", "CDR3"],
     # Median earnings of working-not-enrolled graduates at 6 and 10 yrs.
     # Kept both so the 6-yr value is available as a robustness check
     # without a second pass over the raw file.
@@ -73,9 +80,9 @@ def extract_df(filepath: str) -> pd.DataFrame:
     cleaned institution-level dataframe defined by KEEP_COLS.
 
     Coalesces NPT4_PUB/NPT4_PRIV into a single NPT4 column and
-    C150_4_POOLED_SUPP/C150_L4_POOLED_SUPP into a single C150_POOLED.
-    Raises KeyError if any requested column is missing from the file,
-    so silent schema drift across cohort years is caught early.
+    C150_4/C150_L4 into a single C150. Raises KeyError if any requested
+    column is missing from the file, so silent schema drift across
+    cohort years is caught early.
     """
     requested = _flat_keep_cols()
 
@@ -105,11 +112,9 @@ def extract_df(filepath: str) -> pd.DataFrame:
     df["NPT4"] = df["NPT4_PUB"].fillna(df["NPT4_PRIV"])
     df = df.drop(columns=["NPT4_PUB", "NPT4_PRIV"])
 
-    # Same coalesce for 150%-time completion: the 4yr and <4yr pooled
-    # fields are mutually exclusive by institution type.
-    df["C150_POOLED"] = df["C150_4_POOLED_SUPP"].fillna(
-        df["C150_L4_POOLED_SUPP"]
-    )
-    df = df.drop(columns=["C150_4_POOLED_SUPP", "C150_L4_POOLED_SUPP"])
+    # Same coalesce for 150%-time completion: the 4yr and <4yr rates
+    # are mutually exclusive by institution type.
+    df["C150"] = df["C150_4"].fillna(df["C150_L4"])
+    df = df.drop(columns=["C150_4", "C150_L4"])
 
     return df

@@ -15,16 +15,16 @@ source(here("src", "preprocessing_utils.R"))
 RAW_DIR <- here("data", "raw")
 PROCESSED_DIR <- here("data", "processed")
 
-years <- c(2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019,
-           2021, 2022, 2023)
+years <- c(1996:2023)
 
 for (year in years) {
   # Filename pattern is MERGED<year>_<(year+1) last two digits>_PP.csv,
-  # e.g. MERGED2011_12_PP.csv. %02d zero-pads so years like 2000 would
-  # still format correctly if the list ever grew backward.
+  # e.g. MERGED2011_12_PP.csv, MERGED1999_00_PP.csv. Using (year + 1) %% 100
+  # wraps correctly across the century boundary (1999 -> 00, 2000 -> 01),
+  # and %02d zero-pads the 2000-2009 range.
   filepath <- file.path(
     RAW_DIR,
-    sprintf("MERGED%d_%02d_PP.csv", year, year - 1999)
+    sprintf("MERGED%d_%02d_PP.csv", year, (year + 1) %% 100)
   )
   df <- extract_df(filepath)
   out <- file.path(PROCESSED_DIR, sprintf("scorecard_%d.csv", year))

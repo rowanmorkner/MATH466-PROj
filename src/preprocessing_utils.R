@@ -55,13 +55,20 @@ KEEP_COLS <- list(
   # Net price -- public and private are mutually exclusive by CONTROL,
   # so they get coalesced into a single NPT4 column below.
   cost = c("NPT4_PUB", "NPT4_PRIV"),
-  # 150%-time completion rate, 4yr and <4yr pooled. Mutually exclusive
-  # by institution type; coalesced into a single C150_POOLED below.
-  completion = c("C150_4_POOLED_SUPP", "C150_L4_POOLED_SUPP"),
+  # 150%-time completion rate, 4yr and <4yr. Mutually exclusive by
+  # institution type; coalesced into a single C150 column below.
+  # Using the plain (not _POOLED_SUPP) variants because the pooled/
+  # suppressed versions are only filled in the most-recent cohort
+  # file, while C150_4 / C150_L4 are populated across most cohorts.
+  completion = c("C150_4", "C150_L4"),
   # Median completer debt (principal + 10-yr monthly payment).
   debt = c("GRAD_DEBT_MDN", "GRAD_DEBT_MDN10YR"),
-  # 3-year repayment rate as the single repayment signal.
-  repayment = c("RPY_3YR_RT"),
+  # Repayment signals. CDR3 (3-yr cohort default rate) is populated
+  # across nearly every cohort 1997-2023 and serves as the long-range
+  # panel metric. RPY_3YR_RT (3-yr repayment rate) only covers
+  # ~2009-2016 but gives a different-methodology check in overlap
+  # years; keeping both lets the research question pick.
+  repayment = c("RPY_3YR_RT", "CDR3"),
   # Median earnings of working-not-enrolled graduates at 6 and 10 yrs.
   # Kept both so the 6-yr value is available as a robustness check
   # without a second pass over the raw file.
@@ -77,10 +84,9 @@ flat_keep_cols <- function() {
 # cleaned institution-level tibble defined by KEEP_COLS.
 #
 # Coalesces NPT4_PUB/NPT4_PRIV into a single NPT4 column and
-# C150_4_POOLED_SUPP/C150_L4_POOLED_SUPP into a single C150_POOLED.
-# Stops with an informative error if any requested column is missing
-# from the file, so silent schema drift across cohort years is caught
-# early.
+# C150_4/C150_L4 into a single C150. Stops with an informative error
+# if any requested column is missing from the file, so silent schema
+# drift across cohort years is caught early.
 extract_df <- function(filepath) {
   requested <- flat_keep_cols()
 
@@ -112,11 +118,11 @@ extract_df <- function(filepath) {
     mutate(NPT4 = coalesce(NPT4_PUB, NPT4_PRIV)) %>%
     select(-NPT4_PUB, -NPT4_PRIV)
 
-  # Same coalesce for 150%-time completion: the 4yr and <4yr pooled
-  # fields are mutually exclusive by institution type.
+  # Same coalesce for 150%-time completion: the 4yr and <4yr rates
+  # are mutually exclusive by institution type.
   df <- df %>%
-    mutate(C150_POOLED = coalesce(C150_4_POOLED_SUPP, C150_L4_POOLED_SUPP)) %>%
-    select(-C150_4_POOLED_SUPP, -C150_L4_POOLED_SUPP)
+    mutate(C150 = coalesce(C150_4, C150_L4)) %>%
+    select(-C150_4, -C150_L4)
 
   df
 }
