@@ -1,0 +1,122 @@
+# Utilities for reducing a College Scorecard MERGED*_PP.csv cohort file
+# down to the ~70-variable institution-level feature set the project uses.
+# Mirror of src/preprocessing_utils.py -- keep the two in sync when
+# editing either side.
+
+suppressPackageStartupMessages({
+  library(readr)
+  library(dplyr)
+  library(tidyselect)
+})
+
+# Null sentinel tokens declared in data/raw/data.yaml. These get mapped
+# to NA on read so downstream numeric coercion works cleanly.
+NULL_TOKENS <- c("NULL", "PrivacySuppressed", "NA", "PS")
+
+# CIP-2 program share columns (PCIP01..PCIP54). The gaps (e.g. no PCIP02,
+# PCIP17, PCIP18) are intentional -- those CIP-2 codes don't exist in the
+# Scorecard schema.
+PCIP_COLS <- c(
+  "PCIP01", "PCIP03", "PCIP04", "PCIP05", "PCIP09", "PCIP10",
+  "PCIP11", "PCIP12", "PCIP13", "PCIP14", "PCIP15", "PCIP16",
+  "PCIP19", "PCIP22", "PCIP23", "PCIP24", "PCIP25", "PCIP26",
+  "PCIP27", "PCIP29", "PCIP30", "PCIP31", "PCIP38", "PCIP39",
+  "PCIP40", "PCIP41", "PCIP42", "PCIP43", "PCIP44", "PCIP45",
+  "PCIP46", "PCIP47", "PCIP48", "PCIP49", "PCIP50", "PCIP51",
+  "PCIP52", "PCIP54"
+)
+
+# Grouped so a block can be added or dropped without hunting through one
+# flat list. The guiding rule: one measure per concept, one time horizon,
+# overall population -- subgroup cuts only when a question needs them.
+KEEP_COLS <- list(
+  # Identifiers + name, for joining across years and labeling.
+  id = c("UNITID", "OPEID", "INSTNM"),
+  # Structural and resource descriptors of the institution itself.
+  # CONTROL/PREDDEG/REGION/LOCALE are integer-coded categoricals;
+  # HBCU/HSI/DISTANCEONLY are 0/1 flags.
+  inst_chars = c(
+    "CONTROL", "PREDDEG", "REGION", "LOCALE",
+    "HBCU", "HSI", "DISTANCEONLY",
+    "INEXPFTE", "AVGFACSAL", "PFTFAC", "TUITFTE", "STUFACR"
+  ),
+  # Selectivity signals. Individual SAT/ACT percentile fields are
+  # dropped -- SAT_AVG captures the same dimension in one number.
+  admissions = c("ADM_RATE", "SAT_AVG"),
+  # Student body composition. Only the four largest race groups are
+  # kept; the pre-2009 and 2000-era race fields are dropped.
+  student_body = c(
+    "UGDS", "PCTPELL", "PCTFLOAN", "MD_FAMINC", "FIRST_GEN",
+    "UGDS_WHITE", "UGDS_BLACK", "UGDS_HISP", "UGDS_ASIAN",
+    "FEMALE", "UG25ABV"
+  ),
+  # Academic profile as 38 program-share percentages.
+  academics = PCIP_COLS,
+  # Net price -- public and private are mutually exclusive by CONTROL,
+  # so they get coalesced into a single NPT4 column below.
+  cost = c("NPT4_PUB", "NPT4_PRIV"),
+  # 150%-time completion rate, 4yr and <4yr pooled. Mutually exclusive
+  # by institution type; coalesced into a single C150_POOLED below.
+  completion = c("C150_4_POOLED_SUPP", "C150_L4_POOLED_SUPP"),
+  # Median completer debt (principal + 10-yr monthly payment).
+  debt = c("GRAD_DEBT_MDN", "GRAD_DEBT_MDN10YR"),
+  # 3-year repayment rate as the single repayment signal.
+  repayment = c("RPY_3YR_RT"),
+  # Median earnings of working-not-enrolled graduates at 6 and 10 yrs.
+  # Kept both so the 6-yr value is available as a robustness check
+  # without a second pass over the raw file.
+  earnings = c("MD_EARN_WNE_P10", "MD_EARN_WNE_P6")
+)
+
+# Flatten KEEP_COLS into the vector of column names to request.
+flat_keep_cols <- function() {
+  unlist(KEEP_COLS, use.names = FALSE)
+}
+
+# Load a College Scorecard MERGED*_PP.csv and return the reduced,
+# cleaned institution-level tibble defined by KEEP_COLS.
+#
+# Coalesces NPT4_PUB/NPT4_PRIV into a single NPT4 column and
+# C150_4_POOLED_SUPP/C150_L4_POOLED_SUPP into a single C150_POOLED.
+# Stops with an informative error if any requested column is missing
+# from the file, so silent schema drift across cohort years is caught
+# early.
+extract_df <- function(filepath) {
+  requested <- flat_keep_cols()
+
+  # Peek at the header first. MERGED files are multi-hundred-MB, so
+  # validating column presence before the full read avoids a long
+  # load just to discover a missing column.
+  header <- names(read_csv(filepath, n_max = 0, show_col_types = FALSE))
+  missing_cols <- setdiff(requested, header)
+  if (length(missing_cols) > 0) {
+    stop(sprintf(
+      "Columns missing from %s: %s",
+      filepath,
+      paste(missing_cols, collapse = ", ")
+    ))
+  }
+
+  df <- read_csv(
+    filepath,
+    col_select = all_of(requested),
+    na = NULL_TOKENS,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+
+  # Coalesce net price. Exactly one of NPT4_PUB / NPT4_PRIV is populated
+  # per row (driven by CONTROL), so coalesce gives a single comparable
+  # net-price column regardless of institution type.
+  df <- df %>%
+    mutate(NPT4 = coalesce(NPT4_PUB, NPT4_PRIV)) %>%
+    select(-NPT4_PUB, -NPT4_PRIV)
+
+  # Same coalesce for 150%-time completion: the 4yr and <4yr pooled
+  # fields are mutually exclusive by institution type.
+  df <- df %>%
+    mutate(C150_POOLED = coalesce(C150_4_POOLED_SUPP, C150_L4_POOLED_SUPP)) %>%
+    select(-C150_4_POOLED_SUPP, -C150_L4_POOLED_SUPP)
+
+  df
+}
