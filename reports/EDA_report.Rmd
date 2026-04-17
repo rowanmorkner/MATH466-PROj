@@ -55,6 +55,9 @@ year_max  <- max(panel$year)
 n_rows    <- nrow(panel)
 ```
 
+*Names:*  Omar, Rowan, Christian
+
+
 ## Research question
 
 We're trying to figure out what makes some colleges end up with graduates who can't pay back their student loans. The specific outcome we're using is the three-year cohort default rate (`CDR3`), which is the fraction of an institution's federal borrowers who defaulted within three years of entering repayment. Our research question is: what institutional features predict loan distress, after accounting for who the school serves, how selective it is, what programs it offers, and how well-resourced it is?
