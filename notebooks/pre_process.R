@@ -16,9 +16,7 @@ suppressPackageStartupMessages({
   library(dplyr)
 })
 
-# Anchor paths to the project root via the here package. here() finds
-# the .Rproj file at the repo root, so the script works regardless of
-# which directory it's invoked from (Rscript, RStudio, knitr, etc.).
+
 source(here("src", "preprocessing_utils.R"))
 
 RAW_DIR <- here("data", "raw")
@@ -31,10 +29,7 @@ yearly <- vector("list", length(years))
 names(yearly) <- as.character(years)
 
 for (year in years) {
-  # Filename pattern is MERGED<year>_<(year+1) last two digits>_PP.csv,
-  # e.g. MERGED2011_12_PP.csv, MERGED1999_00_PP.csv. Using
-  # (year + 1) %% 100 wraps correctly across the century boundary
-  # (1999 -> 00, 2000 -> 01); %02d zero-pads the 2000-2009 range.
+ 
   filepath <- file.path(
     RAW_DIR,
     sprintf("MERGED%d_%02d_PP.csv", year, (year + 1) %% 100)
@@ -49,8 +44,7 @@ for (year in years) {
   message(sprintf("Processed %s -> %s (%d rows)", filepath, year_out, nrow(df)))
 }
 
-# Intersection of UNITIDs across every cohort = schools that report
-# data in all 28 years. These are the persistent panel.
+
 persistent_unitids <- Reduce(intersect, lapply(yearly, `[[`, "UNITID"))
 
 # Filter each year to persistent schools and stack into one long tibble.

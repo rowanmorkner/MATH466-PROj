@@ -1258,7 +1258,42 @@ dictionary:
     source: DISTANCEONLY
     type: integer
     description: Flag for distance-education-only education
-  student.size:
+  student.size:Project Group Assignment 2
+Overview
+Conduct an exploratory data analysis about your research topic/question(s). Please
+submitboth your coding file (Rmd for example) and your report documentto Canvas.
+Guideline:
+• First, refine your title, and Problem Statement section if applicable.
+• Secondly, refine your data management if applicable and conduct exploratory data
+analysis in R.
+• Thirdly, describe the dataset, variable and analytic methods (which statistics were used
+for each variable) in the Methods section.
+• Fourthly, provide a first draft of your descriptive statistics in Results section including
+tables and figures.
+You should include the following in your document:
+Refine your title if applicable.
+Refine this section if applicable.
+• Data collection. Explain how the data was collected/experiment
+was conducted. Additionally, you should provide information on the
+individuals who participated to assess representativeness. Non-response
+rates and other relevant data collection details should be mentioned
+here if they are an issue. However, you should not discuss the impact of
+these issues here—save that for the limitations section.
+• Variable creation. Detail the variables in your analysis and how
+they are defined (if necessary). For example, if you created a combined
+(frequency times quantity) drinking variable you should describe how.
+You may need to refer to the code book to explain the variables you are
+using.
+• Analytic Methods. Explain the statistics and plots that will be
+used to analyze your data. E.g. Boxplots are used to illustrate
+differences in GPA across gender and class standing. Mean and standard
+deviation could be used to describe numerical data. Bar chart could be
+used to visualize the categorical data.
+Typically, results sections start with descriptive statistics, e.g. what percent of the sample is
+male/female, what is the mean GPA overall, in the different groups, etc. Figures can be nice
+to illustrate these differences. Information presented should be relevant in helping to
+answer the research question(s) of interest. Tables and figures should be labeled,
+
     source: UGDS
     type: integer
     description: Enrollment of undergraduate certificate/degree-seeking students
