@@ -1,0 +1,227 @@
+---
+title: "distress_EDA"
+output: pdf_document
+---
+
+```{r}
+library(here)
+library(ggplot2)
+library(dplyr)
+library(readr)
+
+panel <- read_csv(here("data", "processed", "distress_primary.csv"),
+                   show_col_types = FALSE)
+```
+
+
+
+1. **Distribution of `CDR3`** — histogram, by year. Does the distribution shift over time? (If yes, year must be a predictor or the data must be split by year.)
+
+
+```{r}
+ggplot(panel, aes(x = CDR3)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") + 
+  facet_wrap(~ year)+ 
+  labs(title = "Distribution of Three Year Default Rate by Year", x = "CDR3", y = "Count") +
+  theme_minimal()
+
+```
+In 2022 and 2023, 100% of all schools have CDR3 = 0. This is because after covid there was a freeze on student loan repayments so no one could default. This is justification for these years to be dropped from the analysis, as they contain no signal on distress. 
+
+The distributions of 3 year default rate does not appear to shift much over time. 
+
+   
+2. **Within-school vs between-school variance in `CDR3`.**
+
+```{r}
+by_school <- panel %>%
+    group_by(UNITID) %>%
+    summarise(mean_cdr3 = mean(CDR3), sd_cdr3 = sd(CDR3), n = n(),
+              .groups = "drop")
+
+var_between <- var(by_school$mean_cdr3)
+var_within  <- mean(by_school$sd_cdr3^2, na.rm = TRUE)
+var_total   <- var(panel$CDR3)
+
+c(between = var_between / var_total,
+  within  = var_within  / var_total)
+```
+
+**Intraclass correlation (ICC)** from a random-intercept model -- the canonical "proportion of total variance attributable to school identity."
+
+```{r}
+library(lme4)
+library(performance)
+
+icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID), data = panel)
+icc(icc_model)
+```
+
+**Spaghetti plot** -- every line is one school's CDR3 trajectory. Sample of 75 schools per sector for readability.
+
+```{r}
+set.seed(42)
+sample_ids <- panel %>%
+  distinct(UNITID, CONTROL) %>%
+  group_by(CONTROL) %>%
+  slice_sample(n = 75) %>%
+  pull(UNITID)
+
+panel %>%
+  filter(UNITID %in% sample_ids) %>%
+  ggplot(aes(x = year, y = CDR3, group = UNITID, color = CONTROL)) +
+  geom_line(alpha = 0.35) +
+  facet_wrap(~ CONTROL) +
+  labs(title = "CDR3 trajectories by sector (sample of 75 schools per sector)",
+       x = "Cohort year", y = "3-year default rate") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Mean vs within-school SD** -- are high-distress schools also more volatile year to year?
+
+```{r, warning = FALSE}
+by_school_ctrl <- panel %>%
+  group_by(UNITID) %>%
+  summarise(
+    mean_cdr3 = mean(CDR3),
+    sd_cdr3   = sd(CDR3),
+    CONTROL   = first(CONTROL),
+    .groups   = "drop"
+  )
+
+# Log scale drops zeros and NAs silently -- report how many points we lose.
+n_zero_sd <- sum(by_school_ctrl$sd_cdr3 == 0, na.rm = TRUE)
+n_na_sd   <- sum(is.na(by_school_ctrl$sd_cdr3))
+message(sprintf(
+  "%d schools with zero SD, %d with NA SD (will be dropped on log scale)",
+  n_zero_sd, n_na_sd
+))
+
+ggplot(by_school_ctrl, aes(x = mean_cdr3, y = sd_cdr3, color = CONTROL)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE, color = "black", linewidth = 0.6) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(title = "School-level mean vs within-school SD of CDR3",
+       subtitle = "Log-log scale; black line is OLS fit",
+       x = "Mean CDR3 (log scale)",
+       y = "Within-school SD of CDR3 (log scale)",
+       color = "Sector") +
+  theme_minimal()
+```
+295 schools with zero SD, 0 with NA SD (will be dropped on log scale)
+
+
+
+3. **Univariate plots** of `CDR3` against the top candidate predictors: `CONTROL`, `PREDDEG`, `PCTPELL`, `ADM_RATE`, `C150`, `GRAD_DEBT_MDN`, `NPT4`
+
+Categorical predictors (`CONTROL`, `PREDDEG`) -- CDR3 distribution by level.
+
+```{r, warning = FALSE}
+panel %>%
+  select(CDR3, CONTROL, PREDDEG) %>%
+  tidyr::pivot_longer(-CDR3, names_to = "variable", values_to = "level") %>%
+  ggplot(aes(x = level, y = CDR3)) +
+  geom_boxplot(outlier.alpha = 0.15, fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(title = "CDR3 by categorical predictor",
+       x = NULL, y = "CDR3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+Continuous predictors -- scatter with a GAM smooth. `alpha = 0.1` handles overplotting; GAM scales better than LOESS at this sample size. NAs are filtered per-predictor so every facet has clean data.
+
+```{r, warning = FALSE, message = FALSE}
+panel %>%
+  select(CDR3, PCTPELL, ADM_RATE, C150, GRAD_DEBT_MDN, NPT4) %>%
+  tidyr::pivot_longer(-CDR3, names_to = "variable", values_to = "value") %>%
+  filter(!is.na(value), !is.na(CDR3)) %>%
+  ggplot(aes(x = value, y = CDR3)) +
+  geom_point(alpha = 0.1, size = 0.6, na.rm = TRUE) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+              se = FALSE, color = "firebrick", linewidth = 0.7,
+              na.rm = TRUE) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(title = "CDR3 vs continuous predictors",
+       subtitle = "Red line is GAM smooth (cubic spline)",
+       x = NULL, y = "CDR3") +
+  theme_minimal()
+```
+
+   
+   
+   
+   
+4. **Bivariate correlation heatmap** of the continuous features — flag any pairs with |r| > 0.8 for the penalized-regression stage.
+
+```{r, fig.width = 12, fig.height = 10, warning = FALSE}
+# All numeric predictor columns. Exclude identifiers, time, and the outcome
+# (CDR3) -- feature-feature relationships are what matter here for
+# multicollinearity diagnostics going into LASSO.
+numeric_predictors <- panel %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(c("UNITID", "OPEID", "year", "CDR3")))
+
+# Drop columns that are entirely NA or have zero variance -- these produce
+# NA correlations and break hclust downstream.
+zero_var_cols <- names(numeric_predictors)[sapply(numeric_predictors, function(x) {
+  v <- var(x, na.rm = TRUE)
+  is.na(v) || v == 0
+})]
+if (length(zero_var_cols) > 0) {
+  message("Dropping zero-variance / all-NA columns: ",
+          paste(zero_var_cols, collapse = ", "))
+  numeric_predictors <- numeric_predictors %>% select(-all_of(zero_var_cols))
+}
+
+# Pearson correlation. `pairwise.complete.obs` handles NAs column-by-column,
+# which matters for SAT_AVG / ADM_RATE (sparse by construction).
+cor_mat <- cor(numeric_predictors,
+               use = "pairwise.complete.obs",
+               method = "pearson")
+
+# Any residual NAs come from pairs with no overlapping non-NA rows -- drop
+# those columns too so clustering can proceed.
+bad_rows <- rowSums(is.na(cor_mat)) > 0
+if (any(bad_rows)) {
+  message("Dropping columns with NA correlations (no overlapping data): ",
+          paste(rownames(cor_mat)[bad_rows], collapse = ", "))
+  cor_mat <- cor_mat[!bad_rows, !bad_rows]
+}
+
+# Hierarchical clustering on (1 - r)/2 distance so correlated blocks sit
+# next to each other -- makes visual scanning for multicollinearity easier.
+hc <- hclust(as.dist((1 - cor_mat) / 2))
+ord <- hc$order
+cor_mat <- cor_mat[ord, ord]
+
+cor_df <- as.data.frame(as.table(cor_mat)) %>%
+  rename(var1 = Var1, var2 = Var2, r = Freq)
+
+ggplot(cor_df, aes(x = var1, y = var2, fill = r)) +
+  geom_tile(color = "white", linewidth = 0.15) +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(title = "Pearson correlation among continuous predictors",
+       subtitle = "Hierarchical clustering ordering",
+       x = NULL, y = NULL, fill = "r") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        axis.text.y = element_text(size = 7),
+        panel.grid   = element_blank())
+```
+
+Pairs with |r| > 0.8 -- candidates to drop / merge before LASSO. Upper-triangle only so each pair shows once.
+
+```{r}
+cor_df %>%
+  filter(as.character(var1) < as.character(var2), abs(r) > 0.8) %>%
+  arrange(desc(abs(r))) %>%
+  mutate(r = round(r, 3)) %>%
+  print(n = Inf)
+```
+
+
+
