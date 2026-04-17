@@ -1,0 +1,358 @@
+---
+title: "EDA Check-in: Predicting Institutional Loan Distress"
+author: "MATH 456 Group Project"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document:
+    fig_caption: true
+    latex_engine: xelatex
+header-includes:
+  - \usepackage{float}
+  - \floatplacement{figure}{H}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.pos   = "H",
+  out.width = "90%"
+)
+```
+
+```{r libraries}
+library(here)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(lme4)
+library(performance)
+```
+
+```{r load-data}
+panel <- read_csv(here("data", "processed", "distress_primary.csv"),
+                  show_col_types = FALSE)
+
+panel <- panel %>%
+  mutate(
+    CONTROL = factor(CONTROL,
+                     levels = c("Public", "Private nonprofit",
+                                "Private for-profit")),
+    PREDDEG = factor(PREDDEG,
+                     levels = c("Not classified", "Certificate",
+                                "Associate's", "Bachelor's", "Graduate"))
+  )
+
+n_schools <- n_distinct(panel$UNITID)
+n_years   <- n_distinct(panel$year)
+year_min  <- min(panel$year)
+year_max  <- max(panel$year)
+n_rows    <- nrow(panel)
+```
+
+## Research question
+
+We're trying to figure out what makes some colleges end up with graduates who can't pay back their student loans. The specific outcome we're using is the three-year cohort default rate (`CDR3`), which is the fraction of an institution's federal borrowers who defaulted within three years of entering repayment. Our research question is: what institutional features predict loan distress, after accounting for who the school serves, how selective it is, what programs it offers, and how well-resourced it is?
+
+## The data
+
+The College Scorecard is a public dataset from the Department of Education. Every year they publish one file per cohort (named something like `MERGED2015_16_PP.csv`) with roughly 3,000 variables on every postsecondary institution that takes federal financial aid. The numbers come from three places stitched together: IPEDS for institutional characteristics and enrollment, NSLDS for loan outcomes, and Treasury tax records for post-graduation earnings. Because the data only covers Title IV institutions and only describes students who received federal aid, the population is specifically "federally-aided students at aid-participating schools" — not all college students nationally.
+
+The raw data is massive and has way more variables than we can sensibly use, so the first thing we did was cut it down to about 70 columns organized into ten groups (identifiers, institutional characteristics, admissions, student body, academics, cost, completion, debt, repayment, earnings). From there we built a balanced panel by keeping only institutions that showed up in every cohort year from 1996 through 2023 — that gave us 3,790 schools. For this analysis we further filter to rows where CDR3 is non-null, which narrows the window to 2011–2019. We cut 2020–2023 even though CDR3 technically exists for those years because the federal loan payment pause during COVID (March 2020 through September 2023) artificially crushed default rates — by 2023, 96% of schools had CDR3 pinned at exactly zero, which isn't a real signal about distress. Including those years would just teach the model to fit a policy artifact.
+
+After all of that we end up with `r format(n_rows, big.mark = ",")` institution-year rows across `r n_schools` schools and `r n_years` cohort years.
+
+We also did a handful of small derivations on the way in. Net price (`NPT4`) is a coalesce of the public and private net-price columns since they're mutually exclusive by sector; same story for the 150%-time completion rate (`C150`). We log-transformed four right-skewed resource variables (`UGDS`, `AVGFACSAL`, `INEXPFTE`, `TUITFTE`) and kept the raw columns too so we can pick whichever works better downstream. And we backfilled three time-invariant flags (`HBCU`, `HSI`, `LOCALE`) within each school because some schools only have the flag reported in certain years even though it doesn't actually change.
+
+```{r var-table}
+var_table <- tribble(
+  ~Group,         ~Variable,                       ~Description,
+  "Outcome",      "CDR3",                          "3-yr cohort default rate",
+  "Outcome",      "distressed",                    "Binary: CDR3 > 0.10",
+  "Identifier",   "UNITID, OPEID, INSTNM",         "Institution ID and name",
+  "Structure",    "CONTROL",                       "Public / Private NFP / Private FP",
+  "Structure",    "PREDDEG",                       "Predominant degree awarded",
+  "Structure",    "REGION, LOCALE",                "Census region and urbanicity",
+  "Structure",    "HBCU, HSI, DISTANCEONLY",       "Institution-type flags",
+  "Resources",    "INEXPFTE, AVGFACSAL, TUITFTE",  "Per-FTE spending / salary",
+  "Resources",    "PFTFAC, STUFACR",               "Full-time faculty %, student:faculty",
+  "Admissions",   "ADM_RATE, SAT_AVG",             "Admission rate, median SAT",
+  "Students",     "UGDS, PCTPELL, PCTFLOAN",       "Enrollment, Pell / loan share",
+  "Students",     "UGDS_WHITE/BLACK/HISP/ASIAN",   "Race composition",
+  "Students",     "FEMALE, UG25ABV",               "Female share, adult learner share",
+  "Academics",    "PCIP01 ... PCIP54",             "38 CIP-2 program share columns",
+  "Cost",         "NPT4",                          "Avg net price (coalesced pub/priv)",
+  "Completion",   "C150",                          "150%-time completion rate",
+  "Debt",         "GRAD_DEBT_MDN",                 "Median graduate debt"
+)
+
+kable(var_table,
+      caption = "Variables we kept for the distress analysis.",
+      booktabs = TRUE,
+      longtable = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                font_size = 9) %>%
+  column_spec(1, width = "1.8cm") %>%
+  column_spec(2, width = "4.5cm") %>%
+  column_spec(3, width = "7cm")
+```
+
+## What we looked at
+
+Our approach had four rough phases. First we checked the distribution of CDR3 itself across years to make sure nothing weird was happening over time. Then we tried to figure out whether variation in CDR3 is mostly driven by differences between schools or by changes within the same school over time, since that tells us whether we need fancy panel methods or can mostly get away with cross-sectional modeling. After that we looked at how CDR3 relates to individual predictors one at a time, using boxplots for the categorical ones and GAM smooths for the continuous ones. Finally we ran a correlation matrix across all the numeric predictors to check for multicollinearity before starting the LASSO regression.
+
+Everything below uses the tidyverse (`dplyr`, `tidyr`, `ggplot2`), with `lme4` and `performance` for the mixed model that gives us the ICC.
+
+## Results
+
+### Descriptive statistics
+
+```{r descriptives}
+desc_stats <- panel %>%
+  summarise(
+    n_obs        = n(),
+    n_schools    = n_distinct(UNITID),
+    mean_cdr3    = mean(CDR3, na.rm = TRUE),
+    median_cdr3  = median(CDR3, na.rm = TRUE),
+    sd_cdr3      = sd(CDR3, na.rm = TRUE),
+    pct_distressed = mean(distressed == "distressed", na.rm = TRUE) * 100
+  )
+
+kable(desc_stats,
+      caption = "Overall panel summary.",
+      digits = c(0, 0, 3, 3, 3, 1),
+      col.names = c("Observations", "Schools", "Mean CDR3",
+                    "Median CDR3", "SD CDR3", "% Distressed (CDR3 > 0.10)"),
+      booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                font_size = 9)
+```
+
+The average three-year default rate across the panel is around 10%, which is the historical ballpark. But the distribution is heavily right-skewed: the median is lower than the mean, and a substantial chunk of institution-years land above our 10% "distressed" threshold. Table 2 breaks this down by sector and shows where the distress is really concentrated.
+
+```{r sector-table}
+sector_stats <- panel %>%
+  group_by(CONTROL) %>%
+  summarise(
+    n_obs = n(),
+    n_schools = n_distinct(UNITID),
+    mean_cdr3 = mean(CDR3, na.rm = TRUE),
+    median_cdr3 = median(CDR3, na.rm = TRUE),
+    sd_cdr3 = sd(CDR3, na.rm = TRUE),
+    pct_distressed = mean(distressed == "distressed", na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+kable(sector_stats,
+      caption = "CDR3 by institutional control sector.",
+      digits = c(0, 0, 0, 3, 3, 3, 1),
+      col.names = c("Sector", "Observations", "Schools", "Mean",
+                    "Median", "SD", "% Distressed"),
+      booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                font_size = 9)
+```
+
+### How CDR3 is distributed over time
+
+Figure 1 is just CDR3 faceted by year. The shape is pretty stable — right-skewed, modal around 5–10%, with a long upper tail. There's no big temporal shift in the outcome across our nine-year window, which is good news because it means year probably doesn't need to be treated as a big structural break in the modeling. We can just use it as a regular predictor.
+
+```{r outcome-dist, fig.cap = "Distribution of CDR3 by cohort year. The shape is pretty consistent across the nine-year window."}
+ggplot(panel, aes(x = CDR3)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "white") +
+  facet_wrap(~ year) +
+  labs(x = "CDR3 (3-year default rate)", y = "Number of institutions") +
+  theme_minimal()
+```
+
+### Between-school vs within-school variance
+
+This is the big structural question for our panel. If most of the variance in CDR3 is between schools — meaning School A has always had a certain default rate and School B has always had a different one — then the problem is basically cross-sectional and we don't need to bother with random effects. If there's meaningful within-school movement, then the panel structure matters and we can exploit it with mixed models.
+
+```{r variance-decomp}
+by_school <- panel %>%
+  group_by(UNITID) %>%
+  summarise(mean_cdr3 = mean(CDR3),
+            sd_cdr3   = sd(CDR3),
+            n         = n(),
+            .groups = "drop")
+
+var_between <- var(by_school$mean_cdr3)
+var_within  <- mean(by_school$sd_cdr3^2, na.rm = TRUE)
+var_total   <- var(panel$CDR3)
+
+decomp_tbl <- tibble(
+  Component = c("Between-school", "Within-school", "Total"),
+  Variance  = c(var_between, var_within, var_total),
+  `% of total` = c(var_between / var_total * 100,
+                   var_within  / var_total * 100,
+                   100)
+)
+
+kable(decomp_tbl,
+      caption = "Manual variance decomposition of CDR3.",
+      digits = c(0, 5, 1),
+      booktabs = TRUE) %>%
+  kable_styling(latex_options = c("striped", "hold_position"),
+                font_size = 9)
+```
+
+```{r icc-calc}
+icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID), data = panel)
+icc_val <- performance::icc(icc_model)$ICC_adjusted
+```
+
+The intraclass correlation from a random-intercept model confirms the same story as the manual decomposition: ICC = `r round(icc_val, 3)`. So about `r round(icc_val * 100)`% of the total variance in CDR3 is stable between-school stuff, and only the remaining `r round((1 - icc_val) * 100)`% is within-school year-to-year wobble. School identity is the dominant factor, but there's enough within-school movement that a mixed-model specification should still earn its keep.
+
+Figure 2 shows what this looks like at the institution level. Each thin line is one school's CDR3 over the nine cohort years. Schools pretty clearly stay in their own lanes — a low-default school today was a low-default school eight years ago. The for-profit sector (right panel) sits visibly higher than public and private non-profit institutions.
+
+```{r spaghetti, fig.cap = "CDR3 trajectories 2011-2019 for a random sample of 75 schools per sector. Each line is one school."}
+set.seed(42)
+sample_ids <- panel %>%
+  distinct(UNITID, CONTROL) %>%
+  group_by(CONTROL) %>%
+  slice_sample(n = 75) %>%
+  pull(UNITID)
+
+panel %>%
+  filter(UNITID %in% sample_ids) %>%
+  ggplot(aes(x = year, y = CDR3, group = UNITID, color = CONTROL)) +
+  geom_line(alpha = 0.35) +
+  facet_wrap(~ CONTROL) +
+  labs(x = "Cohort year", y = "CDR3") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+Figure 3 plots each school's mean CDR3 against its within-school standard deviation on a log-log scale. We switched to log-log because the raw-scale version had everything clumped near the origin and was impossible to read. The positive slope of the OLS fit tells us that higher-default schools are also more volatile year-to-year — basically a mean-variance relationship, which is what you'd expect for a bounded proportion like a default rate. For-profits cluster in the upper right (high mean, high volatility), publics in the lower left.
+
+```{r mean-vs-sd, fig.cap = "School-level mean CDR3 vs within-school SD, log-log scale. Black line is OLS fit."}
+by_school_ctrl <- panel %>%
+  group_by(UNITID) %>%
+  summarise(
+    mean_cdr3 = mean(CDR3),
+    sd_cdr3   = sd(CDR3),
+    CONTROL   = first(CONTROL),
+    .groups = "drop"
+  )
+
+ggplot(by_school_ctrl, aes(x = mean_cdr3, y = sd_cdr3, color = CONTROL)) +
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm", se = FALSE, color = "black",
+              linewidth = 0.6) +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(x = "Mean CDR3 (log scale)",
+       y = "Within-school SD of CDR3 (log scale)",
+       color = "Sector") +
+  theme_minimal()
+```
+
+
+### How individual predictors relate to CDR3
+
+Figure 5 is the categorical story. Public and private nonprofit institutions sit at median CDR3 around 7–8%, while for-profits are visibly higher with a median near 15% and an IQR that stretches well above 20%. Predominant degree matters a lot too — certificate and associate-focused institutions default more than bachelor's-granting ones, which probably reflects the populations those programs serve and the labor market outcomes of shorter credentials.
+
+```{r boxplots, fig.cap = "CDR3 by institutional control sector and predominant degree awarded."}
+panel %>%
+  select(CDR3, CONTROL, PREDDEG) %>%
+  tidyr::pivot_longer(-CDR3, names_to = "variable", values_to = "level") %>%
+  ggplot(aes(x = level, y = CDR3)) +
+  geom_boxplot(outlier.alpha = 0.15, fill = "steelblue", alpha = 0.5) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(x = NULL, y = "CDR3") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+Figure 6 shows CDR3 against five continuous predictors with cubic-spline smooths through the cloud. A few things jump out. Pell Grant share has a clean positive relationship with CDR3 — schools serving more low-income students default more, which is not surprising. Completion rate has a strong negative relationship and it's pretty nonlinear, which tells us a plain linear model probably isn't going to capture everything. Median graduate debt is actually negatively associated with default, which sounds backwards until you remember that the schools where students borrow a lot are often selective private universities serving wealthier students who then don't default. It's a selection effect, not a causal claim. Net price shows a similar weak-negative pattern for the same reason. These nonlinearities and counterintuitive signs are a big part of why we want gradient boosting and GAMs in the modeling stage instead of just OLS.
+
+```{r gam-plots, fig.cap = "CDR3 vs five continuous predictors, with GAM cubic-spline smooths (red)."}
+panel %>%
+  select(CDR3, PCTPELL, ADM_RATE, C150, GRAD_DEBT_MDN, NPT4) %>%
+  tidyr::pivot_longer(-CDR3, names_to = "variable", values_to = "value") %>%
+  filter(!is.na(value), !is.na(CDR3)) %>%
+  ggplot(aes(x = value, y = CDR3)) +
+  geom_point(alpha = 0.1, size = 0.6) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"),
+              se = FALSE, color = "firebrick", linewidth = 0.7) +
+  facet_wrap(~ variable, scales = "free_x") +
+  labs(x = NULL, y = "CDR3") +
+  theme_minimal()
+```
+
+### Multicollinearity
+
+Before throwing everything into LASSO we wanted to see which predictors are basically saying the same thing. Figure 7 is a Pearson correlation matrix across all the numeric predictors, reordered by hierarchical clustering so the correlated blocks sit next to each other. Most of the off-diagonal cells are near zero, which was honestly a bit surprising — we expected more redundancy. The different dimensions we're measuring (selectivity, cost, demographics, program mix, faculty resources) mostly seem to capture genuinely different things about a school rather than being proxies for each other.
+
+```{r corr-heatmap, fig.width = 12, fig.height = 10, fig.cap = "Pearson correlation across continuous predictors, reordered by hierarchical clustering."}
+numeric_predictors <- panel %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(c("UNITID", "OPEID", "year", "CDR3")))
+
+zero_var_cols <- names(numeric_predictors)[sapply(numeric_predictors, function(x) {
+  v <- var(x, na.rm = TRUE)
+  is.na(v) || v == 0
+})]
+if (length(zero_var_cols) > 0) {
+  numeric_predictors <- numeric_predictors %>% select(-all_of(zero_var_cols))
+}
+
+cor_mat <- cor(numeric_predictors,
+               use = "pairwise.complete.obs",
+               method = "pearson")
+
+bad_rows <- rowSums(is.na(cor_mat)) > 0
+if (any(bad_rows)) {
+  cor_mat <- cor_mat[!bad_rows, !bad_rows]
+}
+
+hc  <- hclust(as.dist((1 - cor_mat) / 2))
+ord <- hc$order
+cor_mat <- cor_mat[ord, ord]
+
+cor_df <- as.data.frame(as.table(cor_mat)) %>%
+  rename(var1 = Var1, var2 = Var2, r = Freq)
+
+ggplot(cor_df, aes(x = var1, y = var2, fill = r)) +
+  geom_tile(color = "white", linewidth = 0.15) +
+  scale_fill_gradient2(low = "steelblue", mid = "white", high = "firebrick",
+                       midpoint = 0, limits = c(-1, 1)) +
+  labs(x = NULL, y = NULL, fill = "r") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7),
+        axis.text.y = element_text(size = 7),
+        panel.grid  = element_blank())
+```
+
+Only a handful of pairs exceed our $|r| > 0.8$ flag. Those are the ones we'll need to consolidate or drop before LASSO, since penalized regression gets unstable when it has to pick between near-duplicate predictors. But the fact that the list is short means we don't have to do aggressive pruning up front.
+
+```{r high-corr-table}
+high_corr <- cor_df %>%
+  filter(as.character(var1) < as.character(var2), abs(r) > 0.8) %>%
+  arrange(desc(abs(r))) %>%
+  mutate(r = round(r, 3))
+
+if (nrow(high_corr) == 0) {
+  cat("No pairs exceed |r| > 0.8.\n")
+} else {
+  kable(high_corr,
+        caption = "Predictor pairs with |r| > 0.8, flagged for LASSO pruning.",
+        booktabs = TRUE) %>%
+    kable_styling(latex_options = c("striped", "hold_position"),
+                  font_size = 9)
+}
+```
+
+## Where we're going next
+
+The EDA leaves us with a reasonably clear setup for the modeling phase. CDR3 is well-behaved and we have a clean nine-year window. School identity is the biggest single driver of variation, but there's enough within-school movement that a hierarchical specification still adds something. Several of the bivariate relationships are nonlinear or counterintuitive, which tells us we want flexible models like XGBoost alongside the linear baselines. And the feature space is mostly orthogonal so LASSO selection should be stable.
+
+Our plan from here is a model ladder: a null baseline, then a small OLS with hand-picked predictors for interpretability, then penalized regression (LASSO and ElasticNet), then XGBoost with SHAP-based interpretation for the nonlinearities, and finally a linear mixed model to quantify how much of the explanatory power really comes from school identity versus measured institutional features. We'll also run the whole thing with the binary `distressed` outcome as a robustness check and use `RPY_3YR_RT` on its overlap window as a secondary outcome.
+
+A few caveats worth naming up front. Everything in the data is institution-level, so we can't say anything about individual students. The outcome is only defined for students who received federal aid, so schools with low Title IV participation are underrepresented. And the privacy suppression on small cells means very small institutions are systematically missing — probably correlated with the variables we care about most. These aren't things we can fix in the modeling; they just shape how far we can push the conclusions.

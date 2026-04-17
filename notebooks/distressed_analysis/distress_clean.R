@@ -112,7 +112,8 @@ panel_clean <- panel_clean %>%
 # 1. distress_primary: full CDR3 window (2011-2023). Drops FIRST_GEN and
 #    MD_FAMINC since they're retired after 2016 and would be >50% NA here.
 distress_primary <- panel_clean %>%
-  select(-any_of(c("FIRST_GEN", "MD_FAMINC")))
+  select(-any_of(c("FIRST_GEN", "MD_FAMINC"))) %>%
+  filter(year <= 2019)
 
 # 2. distress_firstgen: 2011-2016 overlap where FIRST_GEN and MD_FAMINC are
 #    populated. Shorter panel, but lets the model use family-income and
@@ -135,6 +136,7 @@ message(sprintf(
   n_distinct(distress_firstgen$UNITID),
   min(distress_firstgen$year), max(distress_firstgen$year)
 ))
+
 
 
 

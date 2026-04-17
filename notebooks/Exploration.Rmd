@@ -22,7 +22,7 @@ Not every variable is populated in every cohort year (e.g. `MD_EARN_WNE_P10`
 only exists for cohorts whose 10-yr post-entry window has closed). Before
 any analysis we need to know which (year, variable) cells have real data.
 
-```{r, fig.height=15}
+```{r, fig.height=9}
 # The ~15 "core panel" variables tied to the research question:
 # expensive-school premium controlling for selectivity. Everything
 # downstream in the EDA operates on this subset rather than all 74 cols.
@@ -38,7 +38,7 @@ CORE_VARS <- c(
 
 # Percent non-null by (year, variable) over the persistent panel.
 coverage <- panel |>
-  select(-INSTNM, -OPEID) |>
+  select(year, CORE_VARS) |>
   pivot_longer(-year, names_to = "variable", values_to = "value") |>
   group_by(year, variable) |>
   summarise(pct_nonnull = mean(!is.na(value)) * 100, .groups = "drop")
@@ -87,6 +87,5 @@ coverage |>
 
 ```{r}
 summary(panel$CDR3)
-
 ```
 
