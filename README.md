@@ -1,3 +1,4 @@
+
 # College Scorecard: Predicting Graduate Earnings
 
 **MATH 456 — Data Science Group Project (Spring 2026)**
@@ -121,4 +122,7 @@ Now you're ready to start a new branch for your next task.
 
 ## Team
 
-*(Add names here)*
+
+*Processing the data* 
+
+Once the your repo is synced with main and youve downloaded and extracted all the data. 
