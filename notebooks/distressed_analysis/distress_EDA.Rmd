@@ -13,10 +13,7 @@ panel <- read_csv(here("data", "processed", "distress_primary.csv"),
                    show_col_types = FALSE)
 ```
 
-
-
-1. **Distribution of `CDR3`** — histogram, by year. Does the distribution shift over time? (If yes, year must be a predictor or the data must be split by year.)
-
+1.  **Distribution of `CDR3`** — histogram, by year. Does the distribution shift over time? (If yes, year must be a predictor or the data must be split by year.)
 
 ```{r}
 ggplot(panel, aes(x = CDR3)) +
@@ -26,12 +23,12 @@ ggplot(panel, aes(x = CDR3)) +
   theme_minimal()
 
 ```
-In 2022 and 2023, 100% of all schools have CDR3 = 0. This is because after covid there was a freeze on student loan repayments so no one could default. This is justification for these years to be dropped from the analysis, as they contain no signal on distress. 
 
-The distributions of 3 year default rate does not appear to shift much over time. 
+In 2022 and 2023, 100% of all schools have CDR3 = 0. This is because after covid there was a freeze on student loan repayments so no one could default. This is justification for these years to be dropped from the analysis, as they contain no signal on distress.
 
-   
-2. **Within-school vs between-school variance in `CDR3`.**
+The distributions of 3 year default rate does not appear to shift much over time.
+
+2.  **Within-school vs between-school variance in `CDR3`.**
 
 ```{r}
 by_school <- panel %>%
@@ -110,11 +107,10 @@ ggplot(by_school_ctrl, aes(x = mean_cdr3, y = sd_cdr3, color = CONTROL)) +
        color = "Sector") +
   theme_minimal()
 ```
+
 295 schools with zero SD, 0 with NA SD (will be dropped on log scale)
 
-
-
-3. **Univariate plots** of `CDR3` against the top candidate predictors: `CONTROL`, `PREDDEG`, `PCTPELL`, `ADM_RATE`, `C150`, `GRAD_DEBT_MDN`, `NPT4`
+3.  **Univariate plots** of `CDR3` against the top candidate predictors: `CONTROL`, `PREDDEG`, `PCTPELL`, `ADM_RATE`, `C150`, `GRAD_DEBT_MDN`, `NPT4`
 
 Categorical predictors (`CONTROL`, `PREDDEG`) -- CDR3 distribution by level.
 
@@ -150,11 +146,7 @@ panel %>%
   theme_minimal()
 ```
 
-   
-   
-   
-   
-4. **Bivariate correlation heatmap** of the continuous features — flag any pairs with |r| > 0.8 for the penalized-regression stage.
+4.  **Bivariate correlation heatmap** of the continuous features — flag any pairs with \|r\| \> 0.8 for the penalized-regression stage.
 
 ```{r, fig.width = 12, fig.height = 10, warning = FALSE}
 # All numeric predictor columns. Exclude identifiers, time, and the outcome
@@ -213,7 +205,7 @@ ggplot(cor_df, aes(x = var1, y = var2, fill = r)) +
         panel.grid   = element_blank())
 ```
 
-Pairs with |r| > 0.8 -- candidates to drop / merge before LASSO. Upper-triangle only so each pair shows once.
+Pairs with \|r\| \> 0.8 -- candidates to drop / merge before LASSO. Upper-triangle only so each pair shows once.
 
 ```{r}
 cor_df %>%
@@ -222,6 +214,3 @@ cor_df %>%
   mutate(r = round(r, 3)) %>%
   print(n = Inf)
 ```
-
-
-

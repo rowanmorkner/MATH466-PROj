@@ -1,4 +1,3 @@
-
 # College Scorecard: Predicting Graduate Earnings
 
 **MATH 456 — Data Science Group Project (Spring 2026)**
@@ -15,7 +14,7 @@ The dataset includes institution-level records on earnings, debt, graduation rat
 
 ## Project Structure
 
-```
+```         
 ├── data/               # Raw and processed data (not tracked by git)
 ├── notebooks/          # Exploratory and analysis notebooks
 ├── src/                # Reusable code (cleaning, feature engineering, models)
@@ -25,9 +24,9 @@ The dataset includes institution-level records on earnings, debt, graduation rat
 
 ## Setup
 
-1. Clone the repo
-2. Download the College Scorecard data from the link above and place CSVs in `data/raw/`
-3. Open the `.Rproj` file in RStudio
+1.  Clone the repo
+2.  Download the College Scorecard data from the link above and place CSVs in `data/raw/`
+3.  Open the `.Rproj` file in RStudio
 
 ## Git Workflow
 
@@ -35,7 +34,7 @@ If you're new to git, here's the standard workflow we'll follow. Run these comma
 
 ### First-time setup
 
-```bash
+``` bash
 # Clone the repo (only do this once)
 git clone <repo-url>
 cd MATH456PROJ
@@ -43,7 +42,7 @@ cd MATH456PROJ
 
 ### Before you start working — always pull the latest changes
 
-```bash
+``` bash
 # Switch to main and pull the latest version
 git checkout main
 git pull
@@ -55,7 +54,7 @@ This makes sure you're starting from the most up-to-date code. **Always do this 
 
 Never work directly on `main`. Instead, create a branch:
 
-```bash
+``` bash
 # Create and switch to a new branch
 git checkout -b your-branch-name
 ```
@@ -66,7 +65,7 @@ Use a short, descriptive name like `eda-earnings`, `clean-scorecard-data`, or `m
 
 Edit files, write code, etc. When you're ready to save a checkpoint:
 
-```bash
+``` bash
 # See what you've changed
 git status
 
@@ -81,7 +80,7 @@ You can make multiple commits on a branch — think of each commit as a save poi
 
 ### Push your branch to GitHub
 
-```bash
+``` bash
 # First push of a new branch
 git push -u origin your-branch-name
 
@@ -91,17 +90,17 @@ git push
 
 ### Open a Pull Request (PR)
 
-1. Go to the repo on GitHub
-2. You'll see a banner saying your branch was recently pushed — click **"Compare & pull request"**
-3. Add a short title and description of what you did
-4. Click **"Create pull request"**
-5. Let the team know so someone can review it
+1.  Go to the repo on GitHub
+2.  You'll see a banner saying your branch was recently pushed — click **"Compare & pull request"**
+3.  Add a short title and description of what you did
+4.  Click **"Create pull request"**
+5.  Let the team know so someone can review it
 
 Once approved, merge the PR on GitHub and delete the branch.
 
 ### After your PR is merged
 
-```bash
+``` bash
 # Switch back to main and pull the merged changes
 git checkout main
 git pull
@@ -111,18 +110,17 @@ Now you're ready to start a new branch for your next task.
 
 ### Quick reference
 
-| What you want to do              | Command                                  |
-|----------------------------------|------------------------------------------|
-| Check what branch you're on      | `git branch`                             |
-| See what files changed           | `git status`                             |
-| See the actual changes           | `git diff`                               |
-| Switch to an existing branch     | `git checkout branch-name`               |
-| Undo changes to a file (careful) | `git checkout -- filename`               |
-| View commit history              | `git log --oneline`                      |
+| What you want to do              | Command                    |
+|----------------------------------|----------------------------|
+| Check what branch you're on      | `git branch`               |
+| See what files changed           | `git status`               |
+| See the actual changes           | `git diff`                 |
+| Switch to an existing branch     | `git checkout branch-name` |
+| Undo changes to a file (careful) | `git checkout -- filename` |
+| View commit history              | `git log --oneline`        |
 
 ## Team
 
+*Processing the data*
 
-*Processing the data* 
-
-Once the your repo is synced with main and youve downloaded and extracted all the data. 
+Once the your repo is synced with main and youve downloaded and extracted all the data.

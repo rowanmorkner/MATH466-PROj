@@ -1,0 +1,424 @@
+% Options for packages loaded elsewhere
+\PassOptionsToPackage{unicode}{hyperref}
+\PassOptionsToPackage{hyphens}{url}
+\documentclass[
+]{article}
+\usepackage{xcolor}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\setcounter{secnumdepth}{-\maxdimen} % remove section numbering
+\usepackage{iftex}
+\ifPDFTeX
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provide euro and other symbols
+\else % if luatex or xetex
+  \usepackage{unicode-math} % this also loads fontspec
+  \defaultfontfeatures{Scale=MatchLowercase}
+  \defaultfontfeatures[\rmfamily]{Ligatures=TeX,Scale=1}
+\fi
+\usepackage{lmodern}
+\ifPDFTeX\else
+  % xetex/luatex font selection
+\fi
+% Use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+\IfFileExists{microtype.sty}{% use microtype if available
+  \usepackage[]{microtype}
+  \UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\makeatletter
+\@ifundefined{KOMAClassName}{% if non-KOMA class
+  \IfFileExists{parskip.sty}{%
+    \usepackage{parskip}
+  }{% else
+    \setlength{\parindent}{0pt}
+    \setlength{\parskip}{6pt plus 2pt minus 1pt}}
+}{% if KOMA class
+  \KOMAoptions{parskip=half}}
+\makeatother
+\usepackage{graphicx}
+\makeatletter
+\newsavebox\pandoc@box
+\newcommand*\pandocbounded[1]{% scales image to fit in text height/width
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempb{\linewidth}{\wd\pandoc@box}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi% select the smaller of both
+  \ifdim\@tempa\p@<\p@\scalebox{\@tempa}{\usebox\pandoc@box}%
+  \else\usebox{\pandoc@box}%
+  \fi%
+}
+% Set default figure placement to htbp
+\def\fps@figure{htbp}
+\makeatother
+\setlength{\emergencystretch}{3em} % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{float}
+\floatplacement{figure}{H}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{wrapfig}
+\usepackage{float}
+\usepackage{colortbl}
+\usepackage{pdflscape}
+\usepackage{tabu}
+\usepackage{threeparttable}
+\usepackage{threeparttablex}
+\usepackage[normalem]{ulem}
+\usepackage{makecell}
+\usepackage{xcolor}
+\usepackage{bookmark}
+\IfFileExists{xurl.sty}{\usepackage{xurl}}{} % add URL line breaks if available
+\urlstyle{same}
+\hypersetup{
+  pdftitle={EDA Check-in: Predicting Institutional Loan Distress},
+  pdfauthor={MATH 456 Group Project},
+  hidelinks,
+  pdfcreator={LaTeX via pandoc}}
+
+\title{EDA Check-in: Predicting Institutional Loan Distress}
+\author{MATH 456 Group Project}
+\date{April 17, 2026}
+
+\begin{document}
+\maketitle
+
+\emph{Names:} Omar, Rowan, Christopher Duran
+
+\subsection{Research question}\label{research-question}
+
+Student loan defualts have become a heated topic among colleges and
+students alike. This sparked the interest in researching predictive
+features that could help classify or predict trends in colleges that
+have many student loan defaults. Our response variable is the three-year
+cohort default rate (\texttt{CDR3}), which is the fraction of an
+institution's federal borrowers who defaulted within three years of
+entering repayment. Our research question is: what institutional
+features predict loan distress, after accounting for who the school
+serves, how selective it is, what programs it offers, and how
+well-resourced it is?
+
+\subsection{The College Scorecard}\label{the-college-scorecard}
+
+The College Scorecard is a public data set from the Department of
+Education. Every year they publish one file per cohort (ex:
+\texttt{MERGED2015\_16\_PP.csv}) with roughly 3,000 variables on every
+post-secondary institution that takes federal financial aid. The numbers
+come from three places stitched together: IPEDS for institutional
+characteristics and enrollment, NSLDS for loan outcomes, and Treasury
+tax records for post-graduation earnings. Because the data only covers
+Title IV institutions and only describes students who received federal
+aid, the population is specifically ``federally-aided students at
+aid-participating schools'' --- not all college students nationally.
+
+The raw data is massive and has way more variables than we can sensibly
+use, so the first thing we did was cut it down to about 70 columns
+organized into ten groups (identifiers, institutional characteristics,
+admissions, student body, academics, cost, completion, debt, repayment,
+earnings). From there we built a balanced panel by keeping only
+institutions that showed up in every cohort year from 1996 through 2023
+--- that gave us 3,790 schools. For this analysis we further filter to
+rows where CDR3 is non-null, which narrows the window to 2011--2019.
+
+Additionally, we cut 2020--2023 due to federal loan payments being
+paused during COVID. Even though CDR3 technically exists for those
+years, March 2020 through September 2023, by 2023 96\% of schools had
+CDR3 pinned at exactly zero. Including those years could definitely lead
+to less clarity and possible misleads.
+
+After selecting our interval we come to 31,782 institution-year rows
+across 3780 schools and 9 cohort years.
+
+Further exploration lead to insight on net price (\texttt{NPT4}) being a
+coalesce of the public and private net-price columns since they're
+mutually exclusive by sector; same story for the 150\%-time completion
+rate (\texttt{C150}). We log-transformed four right-skewed resource
+variables (\texttt{UGDS}, \texttt{AVGFACSAL}, \texttt{INEXPFTE},
+\texttt{TUITFTE}) and kept the raw columns too so we can pick whichever
+works better downstream. And adjustments to some schools where made for
+consistency, where we backfilled three time-invariant flags
+(\texttt{HBCU}, \texttt{HSI}, \texttt{LOCALE}) due to schools
+missingness in certain years even though they are constants.
+
+\begingroup\fontsize{9}{11}\selectfont
+
+\begin{longtable}[t]{>{\raggedright\arraybackslash}p{1.8cm}>{\raggedright\arraybackslash}p{4.5cm}>{\raggedright\arraybackslash}p{7cm}}
+\caption{\label{tab:var-table}Variables we kept for the distress analysis.}\\
+\toprule
+Group & Variable & Description\\
+\midrule
+\cellcolor{gray!10}{Outcome} & \cellcolor{gray!10}{CDR3} & \cellcolor{gray!10}{3-yr cohort default rate}\\
+Outcome & distressed & Binary: CDR3 > 0.10\\
+\cellcolor{gray!10}{Identifier} & \cellcolor{gray!10}{UNITID, OPEID, INSTNM} & \cellcolor{gray!10}{Institution ID and name}\\
+Structure & CONTROL & Public / Private NFP / Private FP\\
+\cellcolor{gray!10}{Structure} & \cellcolor{gray!10}{PREDDEG} & \cellcolor{gray!10}{Predominant degree awarded}\\
+\addlinespace
+Structure & REGION, LOCALE & Census region and urbanicity\\
+\cellcolor{gray!10}{Structure} & \cellcolor{gray!10}{HBCU, HSI, DISTANCEONLY} & \cellcolor{gray!10}{Institution-type flags}\\
+Resources & INEXPFTE, AVGFACSAL, TUITFTE & Per-FTE spending / salary\\
+\cellcolor{gray!10}{Resources} & \cellcolor{gray!10}{PFTFAC, STUFACR} & \cellcolor{gray!10}{Full-time faculty \%, student:faculty}\\
+Admissions & ADM\_RATE, SAT\_AVG & Admission rate, median SAT\\
+\addlinespace
+\cellcolor{gray!10}{Students} & \cellcolor{gray!10}{UGDS, PCTPELL, PCTFLOAN} & \cellcolor{gray!10}{Enrollment, Pell / loan share}\\
+Students & UGDS\_WHITE/BLACK/HISP/ASIAN & Race composition\\
+\cellcolor{gray!10}{Students} & \cellcolor{gray!10}{FEMALE, UG25ABV} & \cellcolor{gray!10}{Female share, adult learner share}\\
+Academics & PCIP01 ... PCIP54 & 38 CIP-2 program share columns\\
+\cellcolor{gray!10}{Cost} & \cellcolor{gray!10}{NPT4} & \cellcolor{gray!10}{Avg net price (coalesced pub/priv)}\\
+\addlinespace
+Completion & C150 & 150\%-time completion rate\\
+\cellcolor{gray!10}{Debt} & \cellcolor{gray!10}{GRAD\_DEBT\_MDN} & \cellcolor{gray!10}{Median graduate debt}\\
+\bottomrule
+\end{longtable}
+\endgroup{}
+
+\subsection{Observations}\label{observations}
+
+Our approach had four rough phases. First we checked the distribution of
+CDR3 itself across years to check consistency and/or trends. Then we
+tried to figure out whether variation in CDR3 is mostly driven by
+differences between schools or by changes within the same school over
+time, since that tells us whether we need fancy panel methods or can
+mostly get away with cross-sectional modeling. After that we looked at
+how CDR3 relates to individual predictors one at a time, using boxplots
+for the categorical ones and GAM smooths for the continuous ones.
+Finally, we ran a correlation matrix across all the numeric predictors
+to check for multicollinearity before starting the LASSO regression.
+
+Everything below uses the tidyverse (\texttt{dplyr}, \texttt{tidyr},
+\texttt{ggplot2}), with \texttt{lme4} and \texttt{performance} for the
+mixed model that gives us the ICC.
+
+\subsection{Results}\label{results}
+
+\subsubsection{Descriptive statistics}\label{descriptive-statistics}
+
+\begingroup\fontsize{9}{11}\selectfont
+
+\begin{longtable}[t]{rrrrrr}
+\caption{\label{tab:descriptives}Overall panel summary.}\\
+\toprule
+Observations & Schools & Mean CDR3 & Median CDR3 & SD CDR3 & \% Distressed (CDR3 > 0.10)\\
+\midrule
+\cellcolor{gray!10}{31782} & \cellcolor{gray!10}{3780} & \cellcolor{gray!10}{0.107} & \cellcolor{gray!10}{0.093} & \cellcolor{gray!10}{0.079} & \cellcolor{gray!10}{46.7}\\
+\bottomrule
+\end{longtable}
+\endgroup{}
+
+The average three-year default rate across the panel is around 10\%,
+which is the historical ballpark. But the distribution is heavily
+right-skewed: the median is lower than the mean, and a substantial chunk
+of institution-years land above our 10\% ``distressed'' threshold. Table
+2 breaks this down by sector and shows where the distress is really
+concentrated.
+
+\begingroup\fontsize{9}{11}\selectfont
+
+\begin{longtable}[t]{lrrrrrr}
+\caption{\label{tab:sector-table}CDR3 by institutional control sector.}\\
+\toprule
+Sector & Observations & Schools & Mean & Median & SD & \% Distressed\\
+\midrule
+\cellcolor{gray!10}{NA} & \cellcolor{gray!10}{31782} & \cellcolor{gray!10}{3780} & \cellcolor{gray!10}{0.107} & \cellcolor{gray!10}{0.093} & \cellcolor{gray!10}{0.079} & \cellcolor{gray!10}{46.7}\\
+\bottomrule
+\end{longtable}
+\endgroup{}
+
+\subsubsection{Time Distribution of
+CDR3}\label{time-distribution-of-cdr3}
+
+Figure 1 is just CDR3 faceted by year. The shape is right-skewed, modal
+around 5--10\%, with a long upper tail. There's no big temporal shift in
+the outcome across our nine-year window, which is good news because it
+means year probably doesn't need to be treated as a big structural break
+in the modeling. We can just use it as a regular predictor.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/outcome-dist-1} 
+
+}
+
+\caption{Distribution of CDR3 by cohort year. The shape is pretty consistent across the nine-year window.}\label{fig:outcome-dist}
+\end{figure}
+
+\subsubsection{Between-School vs Within-School
+Variance}\label{between-school-vs-within-school-variance}
+
+This is the big structural question for our panel. If most of the
+variance in CDR3 is between schools, meaning School A has always had a
+certain default rate and School B has always had a different one, then
+the problem is basically cross-sectional and we don't need to bother
+with random effects. If there's meaningful within-school movement, then
+the panel structure matters and we can exploit it with mixed models.
+
+\begingroup\fontsize{9}{11}\selectfont
+
+\begin{longtable}[t]{lrr}
+\caption{\label{tab:variance-decomp}Manual variance decomposition of CDR3.}\\
+\toprule
+Component & Variance & \% of total\\
+\midrule
+\cellcolor{gray!10}{Between-school} & \cellcolor{gray!10}{0.00513} & \cellcolor{gray!10}{83}\\
+Within-school & 0.00197 & 32\\
+\cellcolor{gray!10}{Total} & \cellcolor{gray!10}{0.00618} & \cellcolor{gray!10}{100}\\
+\bottomrule
+\end{longtable}
+\endgroup{}
+
+The intraclass correlation from a random-intercept model confirms the
+same story as the manual decomposition: ICC = 0.72. So about 72\% of the
+total variance in CDR3 is stable between-school stuff, and only the
+remaining 28\% is within-school year-to-year wobble. School identity is
+the dominant factor, but there's enough within-school movement that a
+mixed-model specification should still earn its keep.
+
+Figure 2 shows what this looks like at the institution level. Each thin
+line is one school's CDR3 over the nine cohort years. Schools pretty
+clearly stay in their own lanes --- a low-default school today was a
+low-default school eight years ago. The for-profit sector (right panel)
+sits visibly higher than public and private non-profit institutions.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/spaghetti-1} 
+
+}
+
+\caption{CDR3 trajectories 2011-2019 for a random sample of 75 schools per sector. Each line is one school.}\label{fig:spaghetti}
+\end{figure}
+
+Figure 3 plots each school's mean CDR3 against its within-school
+standard deviation on a log-log scale. We switched to log-log because
+the raw-scale version had everything clumped near the origin and was
+impossible to read. The positive slope of the OLS fit tells us that
+higher-default schools are also more volatile year-to-year, or a
+mean-variance relationship, which is what you'd expect for a bounded
+proportion like a default rate. With the for-profits cluster in the
+upper right (high mean, high volatility), and publics in the lower left.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/mean-vs-sd-1} 
+
+}
+
+\caption{School-level mean CDR3 vs within-school SD, log-log scale. Black line is OLS fit.}\label{fig:mean-vs-sd}
+\end{figure}
+
+\subsubsection{CDR3 \& Feature Relations}\label{cdr3-feature-relations}
+
+Figure 5 is the categorical story. Public and private nonprofit
+institutions sit at median CDR3 around 7--8\%, while for-profits are
+visibly higher with a median near 15\% and an IQR that stretches well
+above 20\%. Predominant degree matters a lot too --- certificate and
+associate-focused institutions default more than bachelor's-granting
+ones, which probably reflects the populations those programs serve and
+the labor market outcomes of shorter credentials.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/boxplots-1} 
+
+}
+
+\caption{CDR3 by institutional control sector and predominant degree awarded.}\label{fig:boxplots}
+\end{figure}
+
+Figure 6 shows CDR3 against five continuous predictors with cubic-spline
+smooths through the cloud. A few things jump out. Pell Grant share has a
+clean positive relationship with CDR3 --- schools serving more
+low-income students default more, which is not surprising. Completion
+rate has a strong negative relationship and it's pretty nonlinear, which
+tells us a plain linear model probably isn't going to capture
+everything. Median graduate debt is actually negatively associated with
+default, which sounds backwards until you remember that the schools
+where students borrow a lot are often selective private universities
+serving wealthier students who then don't default. It's a selection
+effect, not a causal claim. Net price shows a similar weak-negative
+pattern for the same reason. These nonlinearities and counterintuitive
+signs are a big part of why we want gradient boosting and GAMs in the
+modeling stage instead of just OLS.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/gam-plots-1} 
+
+}
+
+\caption{CDR3 vs five continuous predictors, with GAM cubic-spline smooths (red).}\label{fig:gam-plots}
+\end{figure}
+
+\subsubsection{Multi-Collinearity}\label{multi-collinearity}
+
+Before throwing everything into a LASSO model, we wanted to see which
+predictive features have a heavy correlation. Figure 7 is a Pearson
+correlation matrix across all the numeric predictors, reordered by
+hierarchical clustering so the correlated blocks sit next to each other.
+Most of the off-diagonal cells are near zero, which was honestly a bit
+surprising --- we expected more redundancy. The different dimensions
+we're measuring (selectivity, cost, demographics, program mix, faculty
+resources) mostly seem to capture genuinely different things about a
+school rather than being proxies for each other.
+
+\begin{figure}[H]
+
+{\centering \includegraphics[width=0.9\linewidth]{EDA_report_files/figure-latex/corr-heatmap-1} 
+
+}
+
+\caption{Pearson correlation across continuous predictors, reordered by hierarchical clustering.}\label{fig:corr-heatmap}
+\end{figure}
+
+Only a handful of pairs exceed our \(|r| > 0.8\) flag. Those are the
+ones we'll need to consolidate or drop before LASSO, since penalized
+regression gets unstable when it has to pick between near-duplicate
+predictors. But, a short list means we don't have to do aggressive
+pruning.
+
+\begingroup\fontsize{9}{11}\selectfont
+
+\begin{longtable}[t]{llr}
+\caption{\label{tab:high-corr-table}Predictor pairs with |r| > 0.8, flagged for LASSO pruning.}\\
+\toprule
+var1 & var2 & r\\
+\midrule
+\cellcolor{gray!10}{AVGFACSAL} & \cellcolor{gray!10}{AVGFACSAL\_log} & \cellcolor{gray!10}{0.958}\\
+\bottomrule
+\end{longtable}
+\endgroup{}
+
+\subsection{What's Next?}\label{whats-next}
+
+The EDA leaves us with a reasonably clear setup for the modeling phase.
+CDR3 is well-behaved and we have a clean nine-year window. School
+identity is the biggest single driver of variation, but there's enough
+within-school movement that a hierarchical specification still adds
+something. Several of the bivariate relationships are nonlinear or
+counterintuitive, which tells us we want flexible models like XGBoost
+alongside the linear baselines. And the feature space is mostly
+orthogonal so LASSO selection should be stable.
+
+Our plan from here is a model ladder: a null baseline, then a small OLS
+with hand-picked predictors for interpretability, then penalized
+regression (LASSO and ElasticNet), then XGBoost with SHAP-based
+interpretation for the nonlinearities, and finally a linear mixed model
+to quantify how much of the explanatory power really comes from school
+identity versus measured institutional features. We'll also run the
+whole thing with the binary \texttt{distressed} outcome as a robustness
+check and use \texttt{RPY\_3YR\_RT} on its overlap window as a secondary
+outcome.
+
+\(\textbf{Note:}\) A few caveats worth naming up front. Everything in
+the data is institution-level, so we can't say anything about individual
+students. The outcome is only defined for students who received federal
+aid, so schools with low Title IV participation are underrepresented.
+And the privacy suppression on small cells means very small institutions
+are systematically missing --- probably correlated with the variables we
+care about most. These aren't things we can fix in the modeling; they
+just shape how far we can push the conclusions.
+
+\end{document}
