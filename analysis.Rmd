@@ -1,0 +1,124 @@
+---
+title: "Conclusions"
+output: html_document
+date: "2026-05-04"
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+## Elastic Net
+
+```{r}
+library(tidymodels)
+library(rsample)
+library(tidyverse)
+```
+
+## Split Data
+
+Need the matrices to align in size, be careful
+
+```{r}
+library(glmnet)
+library(dplyr)
+
+set.seed(42)
+train_index <- sample(seq_len(nrow(panel)), size = 0.8 * nrow(panel))
+
+train_data <- panel[train_index, ]
+test_data  <- panel[-train_index, ]
+
+train_clean <- train_data %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+test_clean <- test_data %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+```
+
+```{r}
+#dim(X_test)
+#length(X_train)
+```
+
+```{r}
+X_train <- model.matrix(CDR3 ~ . - UNITID - INSTNM - OPEID, data = train_clean)[, -1]
+y_train <- train_clean$CDR3
+
+X_test  <- model.matrix(CDR3 ~ . - UNITID - INSTNM - OPEID, data = test_clean)[, -1]
+y_test  <- test_clean$CDR3
+```
+
+## Elastic Net Model
+
+Give it a second it does need a minute to run!
+
+```{r}
+cv_model <- cv.glmnet(X_train, y_train, alpha = 0.5)
+
+# PREDICTION 
+
+preds <- predict(cv_model, s = "lambda.min", newx = X_test)
+
+```
+
+## Stronger Evaluation Possibly
+
+```{r}
+rmse <- sqrt(mean((y_test - preds)^2))
+rmse
+```
+
+```{r}
+mean_pred <- mean(y_train)
+rmse_null <- sqrt(mean((y_test - mean_pred)^2))
+rmse_null
+```
+
+## First Comparison (Baseline and Elastic Model)
+
+Using institutional features alone, we can predict default rates with
+\~4.4% error, explaining \~X% of variation.”
+
+```{r}
+ss_res <- sum((y_test - preds)^2)
+ss_tot <- sum((y_test - mean(y_test))^2)
+
+r2 <- 1 - (ss_res / ss_tot)
+r2
+```
+
+## Addition to original EDA Lmer Model
+
+```{r}
+icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID) + (1 | YEAR), data = panel)
+
+```
+
+Try to use year as something to explain the last of the variance % with
+the Elastic model.
+
+## Final Ideas
+
+#### One
+
+-   72% of the variance in default rates is between schools \*(from
+    original EDA report (assignment 2))
+
+This is important becasue: If I randomly pick two schools, most of the
+difference in default rates is due to which school they are — not random
+fluctuation within a school over time.
+
+#### Two
+
+-   The Elastic Net reduced error from: 0.0789 → 0.0438
+-   Baseline compared to EN
+-   That’s \~44% reduction in RMSE
+
+#### Final
+
+-   Institution features reduce prediction error substantially (almost
+    44%), indicating extremely meaningful explanatory power.
+-   Additionally, most of the variation ( almost 72%) exists at the
+    school level, suggesting strong persistent institutional
+    differences.
