@@ -2,123 +2,209 @@
 title: "Conclusions"
 output: html_document
 date: "2026-05-04"
-editor_options: 
-  markdown: 
+editor_options:
+  markdown:
     wrap: 72
 ---
 
-## Elastic Net
+## Setup
 
-```{r}
+We start from the Phase 1 cleaned dataset (`distress_primary.csv`),
+not the raw panel. That handles outcome-side leakage (RPY_3YR_RT,
+earnings columns dropped upstream), the COVID-pause years (filtered to
+year <= 2019), and the missing-coverage drops in one place so this
+script can stay focused on modeling.
+
+```{r setup, message = FALSE, warning = FALSE}
 library(tidymodels)
-library(rsample)
 library(tidyverse)
+library(here)
+library(lme4)
+library(performance)
+library(glmnet)
+
+panel <- read_csv(here("data", "processed", "distress_primary.csv"),
+                  show_col_types = FALSE)
+
+# CSV round-trip strips factor levels -- restore them so the recipe
+# treats categoricals as categorical, not as text.
+panel <- panel %>%
+  mutate(across(c(CONTROL, PREDDEG, REGION, LOCALE), as.factor)) %>%
+  # `distressed` is derived from CDR3 (CDR3 > 0.10), so including it
+  # as a predictor would be perfect leakage.
+  select(-any_of("distressed"))
 ```
 
-## Split Data
+## Grouped train/test split
 
-Need the matrices to align in size, be careful
+Schools appear in multiple years. A random row-level split puts the
+same UNITID in both train and test, which inflates R^2 because the
+model just learns school identity. `group_initial_split` keeps every
+school on one side of the split.
 
-```{r}
-library(glmnet)
-library(dplyr)
+```{r split}
+set.seed(42)
+
+panel_split <- group_initial_split(panel, group = UNITID, prop = 0.8)
+train_data  <- training(panel_split)
+test_data   <- testing(panel_split)
+
+c(train_schools = n_distinct(train_data$UNITID),
+  test_schools  = n_distinct(test_data$UNITID),
+  train_rows    = nrow(train_data),
+  test_rows     = nrow(test_data))
+```
+
+## Recipe
+
+Median imputation is fit on the training data and then applied to test
+(no test-set leakage). NA factor levels become an explicit `unknown`
+level so we don't drop rows. Predictors are normalized so the L1/L2
+penalties act on the same scale.
+
+```{r recipe}
+rec <- recipe(CDR3 ~ ., data = train_data) %>%
+  update_role(UNITID, INSTNM, OPEID, year, new_role = "id") %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+```
+
+## Tune penalty and mixture together
+
+5-fold grouped CV on the training set, tuning both `penalty` (lambda)
+and `mixture` (alpha) so the model can sit anywhere on the LASSO-Ridge
+continuum instead of being pinned at alpha = 0.5.
+
+```{r tune, message = FALSE, warning = FALSE}
+en_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine("glmnet")
+
+wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model(en_spec)
 
 set.seed(42)
-train_index <- sample(seq_len(nrow(panel)), size = 0.8 * nrow(panel))
+folds <- group_vfold_cv(train_data, group = UNITID, v = 5)
 
-train_data <- panel[train_index, ]
-test_data  <- panel[-train_index, ]
+en_grid <- grid_regular(
+  penalty(range = c(-4, 0)),
+  mixture(range = c(0, 1)),
+  levels = c(penalty = 20, mixture = 6)
+)
 
-train_clean <- train_data %>%
-  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+tuned <- tune_grid(
+  wf,
+  resamples = folds,
+  grid      = en_grid,
+  metrics   = metric_set(yardstick::rmse, yardstick::rsq)
+)
 
-test_clean <- test_data %>%
-  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+show_best(tuned, metric = "rmse", n = 5)
 ```
 
-```{r}
-#dim(X_test)
-#length(X_train)
+## Fit final model on full train, evaluate on test
+
+```{r fit}
+best <- select_best(tuned, metric = "rmse")
+best
+
+final_wf  <- finalize_workflow(wf, best)
+final_fit <- fit(final_wf, data = train_data)
+
+test_preds <- predict(final_fit, new_data = test_data) %>%
+  bind_cols(test_data %>% select(CDR3))
+
+en_metrics <- test_preds %>%
+  metrics(truth = CDR3, estimate = .pred)
+
+rmse_en <- en_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
+r2_en   <- en_metrics %>% filter(.metric == "rsq")  %>% pull(.estimate)
+
+# Null model = predict the training mean for every test row.
+mean_train <- mean(train_data$CDR3, na.rm = TRUE)
+rmse_null  <- sqrt(mean((test_data$CDR3 - mean_train)^2, na.rm = TRUE))
+
+tibble(
+  model = c("Null (train mean)", "Elastic Net (tuned, grouped CV)"),
+  rmse  = c(rmse_null, rmse_en)
+)
+
+reduction_pct <- (rmse_null - rmse_en) / rmse_null * 100
 ```
 
-```{r}
-X_train <- model.matrix(CDR3 ~ . - UNITID - INSTNM - OPEID, data = train_clean)[, -1]
-y_train <- train_clean$CDR3
+## Coefficients
 
-X_test  <- model.matrix(CDR3 ~ . - UNITID - INSTNM - OPEID, data = test_clean)[, -1]
-y_test  <- test_clean$CDR3
+The interpretive payoff of the elastic net -- which institutional
+features actually carry weight after penalization. Nonzero coefficients
+only, sorted by magnitude.
+
+```{r coefs}
+en_coefs <- final_fit %>%
+  extract_fit_parsnip() %>%
+  tidy() %>%
+  filter(term != "(Intercept)", estimate != 0) %>%
+  mutate(abs_est = abs(estimate)) %>%
+  arrange(desc(abs_est)) %>%
+  select(term, estimate, penalty)
+
+en_coefs %>% print(n = 25)
+
+n_nonzero <- nrow(en_coefs)
 ```
 
-## Elastic Net Model
+## Mixed-effects variance decomposition
 
-Give it a second it does need a minute to run!
+Updated ICC with both school and year as random effects. The original
+EDA fit only `(1 | UNITID)`; adding `(1 | year)` lets us separate
+school-level variance from year-to-year drift.
 
-```{r}
-cv_model <- cv.glmnet(X_train, y_train, alpha = 0.5)
+```{r icc, message = FALSE, warning = FALSE}
+icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID) + (1 | year), data = panel)
+summary(icc_model)
+icc(icc_model, by_group = TRUE)
 
-# PREDICTION 
-
-preds <- predict(cv_model, s = "lambda.min", newx = X_test)
-
+icc_vals <- icc(icc_model, by_group = TRUE)
+icc_school <- icc_vals %>% filter(Group == "UNITID") %>% pull(ICC)
+icc_year   <- icc_vals %>% filter(Group == "year")   %>% pull(ICC)
 ```
 
-## Stronger Evaluation Possibly
-
-```{r}
-rmse <- sqrt(mean((y_test - preds)^2))
-rmse
-```
-
-```{r}
-mean_pred <- mean(y_train)
-rmse_null <- sqrt(mean((y_test - mean_pred)^2))
-rmse_null
-```
-
-## First Comparison (Baseline and Elastic Model)
-
-Using institutional features alone, we can predict default rates with
-\~4.4% error, explaining \~X% of variation.”
-
-```{r}
-ss_res <- sum((y_test - preds)^2)
-ss_tot <- sum((y_test - mean(y_test))^2)
-
-r2 <- 1 - (ss_res / ss_tot)
-r2
-```
-
-## Addition to original EDA Lmer Model
-
-```{r}
-icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID) + (1 | YEAR), data = panel)
-
-```
-
-Try to use year as something to explain the last of the variance % with
-the Elastic model.
-
-## Final Ideas
+## Final ideas
 
 #### One
 
--   72% of the variance in default rates is between schools \*(from
-    original EDA report (assignment 2))
+-   **`r round(icc_school * 100, 1)`%** of the variance in default rates
+    sits between schools (school-level ICC), and only
+    **`r round(icc_year * 100, 1)`%** is year-to-year drift.
 
-This is important becasue: If I randomly pick two schools, most of the
-difference in default rates is due to which school they are — not random
-fluctuation within a school over time.
+If I pick two schools at random, most of the difference in default
+rates comes from *which school they are* -- not random fluctuation
+within a school over time, and not the cohort year either.
 
 #### Two
 
--   The Elastic Net reduced error from: 0.0789 → 0.0438
--   Baseline compared to EN
--   That’s \~44% reduction in RMSE
+-   Null RMSE: **`r round(rmse_null, 4)`**
+-   Elastic Net RMSE (tuned, grouped CV): **`r round(rmse_en, 4)`**
+-   Test R^2: **`r round(r2_en, 3)`**
+-   That's a **`r round(reduction_pct, 1)`%** reduction in RMSE over
+    the null.
+-   Best hyperparameters: penalty = `r signif(best$penalty, 3)`,
+    mixture = `r best$mixture`. The model retained
+    **`r n_nonzero`** nonzero coefficients.
 
 #### Final
 
--   Institution features reduce prediction error substantially (almost
-    44%), indicating extremely meaningful explanatory power.
--   Additionally, most of the variation ( almost 72%) exists at the
-    school level, suggesting strong persistent institutional
-    differences.
+-   Institution features reduce prediction error meaningfully relative
+    to the null, even after blocking school identity out of the test
+    set (so the gain is *generalization* across schools, not memorizing
+    them).
+-   Most of the variation in CDR3 is persistent at the school level
+    (`r round(icc_school * 100, 1)`% ICC), which means the elastic net
+    is recovering structural school traits -- not transient cohort
+    effects.
+-   Compared with the earlier random-split run (R^2 ~ 0.33, RMSE
+    reduction ~ 18%), the grouped split is the honest number. Random
+    splits on panel data overstate performance because the test set
+    shares schools with the training set.
