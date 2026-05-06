@@ -1,58 +1,40 @@
 ## Setup
 
-We start from the Phase 1 cleaned dataset (`distress_primary.csv`), not
-the raw panel. That handles outcome-side leakage (RPY\_3YR\_RT, earnings
-columns dropped upstream), the COVID-pause years (filtered to year &lt;=
-2019), and the missing-coverage drops in one place so this script can
-stay focused on modeling.
+The Phase 1 cleaning script already handled leakage (RPY\_3YR\_RT and
+earnings columns dropped) and the COVID payment-pause years (filtered to
+`year <= 2019`), so we just load and go.
 
-    library(tidymodels)
     library(tidyverse)
+    library(tidymodels)
     library(here)
     library(lme4)
     library(performance)
-    library(glmnet)
 
-    panel <- read_csv(here("data", "processed", "distress_primary.csv"),
-                      show_col_types = FALSE)
-
-    # CSV round-trip strips factor levels -- restore them so the recipe
-    # treats categoricals as categorical, not as text.
-    panel <- panel %>%
+    panel <- read_csv(here("data/processed/distress_primary.csv"),
+                      show_col_types = FALSE) %>%
       mutate(across(c(CONTROL, PREDDEG, REGION, LOCALE), as.factor)) %>%
-      # `distressed` is derived from CDR3 (CDR3 > 0.10), so including it
-      # as a predictor would be perfect leakage.
-      select(-any_of("distressed"))
+      select(-distressed)  # would leak: it's just (CDR3 > 0.10)
 
-## Grouped train/test split
+## Train / test split
 
-Schools appear in multiple years. A random row-level split puts the same
-UNITID in both train and test, which inflates R^2 because the model just
-learns school identity. `group_initial_split` keeps every school on one
-side of the split.
+Each school appears in multiple years. A row-level random split puts the
+same school in both halves and the model just learns school identity.
+Sampling whole schools instead.
 
     set.seed(42)
+    test_schools <- sample(unique(panel$UNITID),
+                           round(0.2 * n_distinct(panel$UNITID)))
 
-    panel_split <- group_initial_split(panel, group = UNITID, prop = 0.8)
-    train_data  <- training(panel_split)
-    test_data   <- testing(panel_split)
+    train <- filter(panel, !UNITID %in% test_schools)
+    test  <- filter(panel, UNITID %in% test_schools)
 
-    c(train_schools = n_distinct(train_data$UNITID),
-      test_schools  = n_distinct(test_data$UNITID),
-      train_rows    = nrow(train_data),
-      test_rows     = nrow(test_data))
+## Elastic net
 
-    ## train_schools  test_schools    train_rows     test_rows 
-    ##          3020           760         25426          6356
+A prior 20 × 6 grid sweep over `(penalty, mixture)` on 5-fold grouped CV
+landed on a flat region — many configurations tied — so we use the
+chosen point directly and skip re-tuning each knit.
 
-## Recipe
-
-Median imputation is fit on the training data and then applied to test
-(no test-set leakage). NA factor levels become an explicit `unknown`
-level so we don’t drop rows. Predictors are normalized so the L1/L2
-penalties act on the same scale.
-
-    rec <- recipe(CDR3 ~ ., data = train_data) %>%
+    en_recipe <- recipe(CDR3 ~ ., data = train) %>%
       update_role(UNITID, INSTNM, OPEID, year, new_role = "id") %>%
       step_unknown(all_nominal_predictors()) %>%
       step_impute_median(all_numeric_predictors()) %>%
@@ -60,164 +42,164 @@ penalties act on the same scale.
       step_zv(all_predictors()) %>%
       step_normalize(all_numeric_predictors())
 
-## Tune penalty and mixture together
-
-5-fold grouped CV on the training set, tuning both `penalty` (lambda)
-and `mixture` (alpha) so the model can sit anywhere on the LASSO-Ridge
-continuum instead of being pinned at alpha = 0.5.
-
-    en_spec <- linear_reg(penalty = tune(), mixture = tune()) %>%
+    en_spec <- linear_reg(penalty = 0.00113, mixture = 0.2) %>%
       set_engine("glmnet")
 
-    wf <- workflow() %>%
-      add_recipe(rec) %>%
-      add_model(en_spec)
+    en_fit  <- workflow(en_recipe, en_spec) %>% fit(train)
+    en_pred <- predict(en_fit, test) %>% pull(.pred)
 
-    set.seed(42)
-    folds <- group_vfold_cv(train_data, group = UNITID, v = 5)
-
-    en_grid <- grid_regular(
-      penalty(range = c(-4, 0)),
-      mixture(range = c(0, 1)),
-      levels = c(penalty = 20, mixture = 6)
-    )
-
-    tuned <- tune_grid(
-      wf,
-      resamples = folds,
-      grid      = en_grid,
-      metrics   = metric_set(yardstick::rmse, yardstick::rsq)
-    )
-
-    show_best(tuned, metric = "rmse", n = 5)
-
-    ## # A tibble: 5 × 8
-    ##    penalty mixture .metric .estimator   mean     n std_err .config          
-    ##      <dbl>   <dbl> <chr>   <chr>       <dbl> <int>   <dbl> <chr>            
-    ## 1 0.00113      0.2 rmse    standard   0.0566     5 0.00124 pre0_mod032_post0
-    ## 2 0.000695     0.2 rmse    standard   0.0566     5 0.00124 pre0_mod026_post0
-    ## 3 0.000428     0.4 rmse    standard   0.0566     5 0.00124 pre0_mod021_post0
-    ## 4 0.000264     0.8 rmse    standard   0.0566     5 0.00124 pre0_mod017_post0
-    ## 5 0.000264     0.6 rmse    standard   0.0566     5 0.00124 pre0_mod016_post0
-
-## Fit final model on full train, evaluate on test
-
-    best <- select_best(tuned, metric = "rmse")
-    best
-
-    ## # A tibble: 1 × 3
-    ##   penalty mixture .config          
-    ##     <dbl>   <dbl> <chr>            
-    ## 1 0.00113     0.2 pre0_mod032_post0
-
-    final_wf  <- finalize_workflow(wf, best)
-    final_fit <- fit(final_wf, data = train_data)
-
-    test_preds <- predict(final_fit, new_data = test_data) %>%
-      bind_cols(test_data %>% select(CDR3))
-
-    en_metrics <- test_preds %>%
-      metrics(truth = CDR3, estimate = .pred)
-
-    rmse_en <- en_metrics %>% filter(.metric == "rmse") %>% pull(.estimate)
-    r2_en   <- en_metrics %>% filter(.metric == "rsq")  %>% pull(.estimate)
-
-    # Null model = predict the training mean for every test row.
-    mean_train <- mean(train_data$CDR3, na.rm = TRUE)
-    rmse_null  <- sqrt(mean((test_data$CDR3 - mean_train)^2, na.rm = TRUE))
-
-    tibble(
-      model = c("Null (train mean)", "Elastic Net (tuned, grouped CV)"),
-      rmse  = c(rmse_null, rmse_en)
-    )
-
-    ## # A tibble: 2 × 2
-    ##   model                             rmse
-    ##   <chr>                            <dbl>
-    ## 1 Null (train mean)               0.0812
-    ## 2 Elastic Net (tuned, grouped CV) 0.0603
-
+    rmse_null     <- sqrt(mean((test$CDR3 - mean(train$CDR3))^2))
+    rmse_en       <- sqrt(mean((test$CDR3 - en_pred)^2))
+    r2_en         <- 1 - sum((test$CDR3 - en_pred)^2) /
+                         sum((test$CDR3 - mean(test$CDR3))^2)
     reduction_pct <- (rmse_null - rmse_en) / rmse_null * 100
 
-## Coefficients
-
-The interpretive payoff of the elastic net – which institutional
-features actually carry weight after penalization. Nonzero coefficients
-only, sorted by magnitude.
-
-    en_coefs <- final_fit %>%
-      extract_fit_parsnip() %>%
-      tidy() %>%
+    en_coefs <- tidy(en_fit) %>%
       filter(term != "(Intercept)", estimate != 0) %>%
-      mutate(abs_est = abs(estimate)) %>%
-      arrange(desc(abs_est)) %>%
-      select(term, estimate, penalty)
-
-    en_coefs %>% print(n = 25)
-
-    ## # A tibble: 74 × 3
-    ##    term                      estimate penalty
-    ##    <chr>                        <dbl>   <dbl>
-    ##  1 PREDDEG_Bachelor.s        -0.0158  0.00113
-    ##  2 C150                      -0.0143  0.00113
-    ##  3 PREDDEG_Graduate          -0.0121  0.00113
-    ##  4 PCTPELL                    0.0104  0.00113
-    ##  5 LOCALE_unknown            -0.0102  0.00113
-    ##  6 GRAD_DEBT_MDN             -0.00857 0.00113
-    ##  7 HBCU                       0.00749 0.00113
-    ##  8 CONTROL_Private.nonprofit -0.00733 0.00113
-    ##  9 TUITFTE_log               -0.00684 0.00113
-    ## 10 PCIP43                     0.00526 0.00113
-    ## 11 CONTROL_Public            -0.00518 0.00113
-    ## 12 PCTFLOAN                   0.00494 0.00113
-    ## 13 INEXPFTE_log              -0.00485 0.00113
-    ## 14 AVGFACSAL_log             -0.00484 0.00113
-    ## 15 PCIP24                     0.00447 0.00113
-    ## 16 PCIP50                     0.00443 0.00113
-    ## 17 LOCALE_Town..Remote        0.00370 0.00113
-    ## 18 REGION_Mid.East           -0.00320 0.00113
-    ## 19 UGDS_BLACK                 0.00316 0.00113
-    ## 20 REGION_Plains             -0.00315 0.00113
-    ## 21 UGDS_log                   0.00313 0.00113
-    ## 22 PCIP48                     0.00289 0.00113
-    ## 23 PREDDEG_Certificate        0.00288 0.00113
-    ## 24 UGDS_ASIAN                -0.00281 0.00113
-    ## 25 LOCALE_Rural..Remote       0.00279 0.00113
-    ## # ℹ 49 more rows
+      arrange(-abs(estimate))
 
     n_nonzero <- nrow(en_coefs)
+    head(en_coefs, 15)
 
-## Mixed-effects variance decomposition
+    ## # A tibble: 15 × 3
+    ##    term                      estimate penalty
+    ##    <chr>                        <dbl>   <dbl>
+    ##  1 PREDDEG_Bachelor.s        -0.0145  0.00113
+    ##  2 C150                      -0.0140  0.00113
+    ##  3 PREDDEG_Graduate          -0.0129  0.00113
+    ##  4 PCTPELL                    0.00962 0.00113
+    ##  5 LOCALE_unknown            -0.00940 0.00113
+    ##  6 GRAD_DEBT_MDN             -0.00865 0.00113
+    ##  7 HBCU                       0.00808 0.00113
+    ##  8 INEXPFTE_log              -0.00623 0.00113
+    ##  9 CONTROL_Private.nonprofit -0.00587 0.00113
+    ## 10 TUITFTE_log               -0.00570 0.00113
+    ## 11 PCIP43                     0.00485 0.00113
+    ## 12 AVGFACSAL_log             -0.00475 0.00113
+    ## 13 PCTFLOAN                   0.00415 0.00113
+    ## 14 PCIP24                     0.00402 0.00113
+    ## 15 PCIP50                     0.00391 0.00113
 
-Updated ICC with both school and year as random effects. The original
-EDA fit only `(1 | UNITID)`; adding `(1 | year)` lets us separate
-school-level variance from year-to-year drift.
+## Predicted vs actual
 
-    icc_model <- lmer(CDR3 ~ 1 + (1 | UNITID) + (1 | year), data = panel)
-    summary(icc_model)
+Colored by sector — the per-sector slopes are the diagnostic that
+motivates the next section.
 
-    ## Linear mixed model fit by REML ['lmerMod']
-    ## Formula: CDR3 ~ 1 + (1 | UNITID) + (1 | year)
-    ##    Data: panel
+    tibble(actual = test$CDR3, predicted = en_pred, sector = test$CONTROL) %>%
+      ggplot(aes(actual, predicted, color = sector)) +
+      geom_point(alpha = 0.35, size = 0.8) +
+      geom_abline(linetype = "dashed", color = "firebrick") +
+      geom_smooth(method = "lm", se = FALSE, linewidth = 0.6) +
+      coord_equal() +
+      labs(title = "Elastic Net: predicted vs actual CDR3 (test set)",
+           subtitle = "Red dashed = perfect prediction; lines = per-sector OLS fit",
+           x = "Actual CDR3", y = "Predicted CDR3", color = "Sector") +
+      theme_minimal() +
+      theme(legend.position = "bottom")
+
+![](analysis_files/figure-markdown_strict/pred_actual-1.png)
+
+## OLS baseline
+
+A simple linear model on 8 hand-picked features as a comparison point.
+Median-imputing first because `lm()` drops rows with any NA.
+
+    impute_med <- function(df) df %>%
+      mutate(across(where(is.numeric), \(x) replace_na(x, median(x, na.rm = TRUE))))
+
+    train_i <- impute_med(train)
+    test_i  <- impute_med(test)
+
+    ols_features <- c("CONTROL", "PREDDEG", "PCTPELL", "C150",
+                      "ADM_RATE", "NPT4", "UGDS_log", "HBCU")
+
+    ols_fit  <- lm(CDR3 ~ ., data = train_i %>% select(CDR3, all_of(ols_features)))
+    ols_pred <- predict(ols_fit, newdata = test_i)
+
+    rmse_ols <- sqrt(mean((test$CDR3 - ols_pred)^2))
+    r2_ols   <- 1 - sum((test$CDR3 - ols_pred)^2) /
+                    sum((test$CDR3 - mean(test$CDR3))^2)
+
+    summary(ols_fit)
+
     ## 
-    ## REML criterion at convergence: -100293.3
+    ## Call:
+    ## lm(formula = CDR3 ~ ., data = train_i %>% select(CDR3, all_of(ols_features)))
     ## 
-    ## Scaled residuals: 
+    ## Residuals:
     ##      Min       1Q   Median       3Q      Max 
-    ## -10.6023  -0.3751  -0.0367   0.3179  17.7156 
+    ## -0.24696 -0.02848 -0.00406  0.02634  0.88018 
     ## 
-    ## Random effects:
-    ##  Groups   Name        Variance  Std.Dev.
-    ##  UNITID   (Intercept) 0.0049281 0.07020 
-    ##  year     (Intercept) 0.0001241 0.01114 
-    ##  Residual             0.0017056 0.04130 
-    ## Number of obs: 31782, groups:  UNITID, 3780; year, 9
+    ## Coefficients:
+    ##                            Estimate Std. Error t value Pr(>|t|)    
+    ## (Intercept)               1.360e-01  4.228e-03  32.174  < 2e-16 ***
+    ## CONTROLPrivate nonprofit -1.657e-02  1.517e-03 -10.921  < 2e-16 ***
+    ## CONTROLPublic            -1.164e-02  1.623e-03  -7.172 7.57e-13 ***
+    ## PREDDEGBachelor's        -5.140e-02  1.235e-03 -41.604  < 2e-16 ***
+    ## PREDDEGCertificate        8.179e-03  1.334e-03   6.129 8.97e-10 ***
+    ## PREDDEGGraduate          -9.370e-02  2.182e-03 -42.947  < 2e-16 ***
+    ## PCTPELL                   6.925e-02  2.564e-03  27.007  < 2e-16 ***
+    ## C150                     -9.305e-02  2.327e-03 -39.988  < 2e-16 ***
+    ## ADM_RATE                  1.714e-03  2.881e-03   0.595    0.552    
+    ## NPT4                     -3.965e-07  7.268e-08  -5.456 4.92e-08 ***
+    ## UGDS_log                  3.663e-03  3.349e-04  10.940  < 2e-16 ***
+    ## HBCU                      6.585e-02  2.601e-03  25.315  < 2e-16 ***
+    ## ---
+    ## Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
     ## 
-    ## Fixed effects:
-    ##             Estimate Std. Error t value
-    ## (Intercept) 0.101398   0.003893   26.05
+    ## Residual standard error: 0.06053 on 25376 degrees of freedom
+    ## Multiple R-squared:  0.406,  Adjusted R-squared:  0.4057 
+    ## F-statistic:  1576 on 11 and 25376 DF,  p-value: < 2.2e-16
 
-    icc(icc_model, by_group = TRUE)
+## Sector-interaction models
+
+For-profits’ shallower slope in the plot above is the kind of thing
+`CONTROL × feature` interactions should fix. Letting `C150` and
+`PCTPELL` slopes vary by sector — if the per-sector RMSE drops, the gap
+is a coefficient problem; if not, it’s a feature-coverage one.
+
+    # OLS: base R formula syntax expands `CONTROL * (C150 + PCTPELL)` to
+    # main effects plus all sector-by-feature interactions automatically.
+    ols_int_fit  <- lm(CDR3 ~ CONTROL * (C150 + PCTPELL) +
+                              PREDDEG + ADM_RATE + NPT4 + UGDS_log + HBCU,
+                       data = train_i)
+    ols_int_pred <- predict(ols_int_fit, newdata = test_i)
+
+    # EN: same recipe with one extra step. Column names come from step_dummy.
+    en_int_recipe <- en_recipe %>%
+      step_interact(terms = ~ (CONTROL_Private.nonprofit + CONTROL_Public):
+                              (C150 + PCTPELL))
+    en_int_pred <- workflow(en_int_recipe, en_spec) %>%
+      fit(train) %>% predict(test) %>% pull(.pred)
+
+    # Per-sector RMSE for all four models, side by side.
+    rmse_by_sector <- function(pred) {
+      tapply((test$CDR3 - pred)^2, test$CONTROL, \(x) sqrt(mean(x)))
+    }
+
+    rbind(
+      "OLS"                = rmse_by_sector(ols_pred),
+      "OLS + interactions" = rmse_by_sector(ols_int_pred),
+      "EN"                 = rmse_by_sector(en_pred),
+      "EN + interactions"  = rmse_by_sector(en_int_pred)
+    )
+
+    ##                    Private for-profit Private nonprofit     Public
+    ## OLS                        0.07617091        0.04418335 0.06156147
+    ## OLS + interactions         0.07573049        0.04387334 0.06185396
+    ## EN                         0.07428581        0.04076514 0.05629565
+    ## EN + interactions          0.07401528        0.04091747 0.05649259
+
+## Variance decomposition
+
+How much of the variation in CDR3 lives between schools vs. between
+years vs. within a school over time?
+
+    icc_fit  <- lmer(CDR3 ~ 1 + (1 | UNITID) + (1 | year), data = panel)
+    icc_vals <- icc(icc_fit, by_group = TRUE)
+    icc_school <- icc_vals %>% filter(Group == "UNITID") %>% pull(ICC)
+    icc_year   <- icc_vals %>% filter(Group == "year")   %>% pull(ICC)
+    icc_vals
 
     ## # ICC by Group
     ## 
@@ -226,39 +208,108 @@ school-level variance from year-to-year drift.
     ## UNITID | 0.729
     ## year   | 0.018
 
-    icc_vals <- icc(icc_model, by_group = TRUE)
-    icc_school <- icc_vals %>% filter(Group == "UNITID") %>% pull(ICC)
-    icc_year   <- icc_vals %>% filter(Group == "year")   %>% pull(ICC)
-
 ## Final ideas
 
 #### One
 
-- **72.9%** of the variance in default rates sits between schools
-  (school-level ICC), and only **1.8%** is year-to-year drift.
+- **72.9%** of the variance in default rates sits between schools, only
+  **1.8%** is year-to-year drift.
 
-If I pick two schools at random, most of the difference in default rates
-comes from *which school they are* – not random fluctuation within a
-school over time, and not the cohort year either.
+If I pick two schools at random, most of the difference in their default
+rates comes from *which school they are* — not random fluctuation within
+a school over time, and not the cohort year either.
 
 #### Two
 
-- Null RMSE: **0.0812**
-- Elastic Net RMSE (tuned, grouped CV): **0.0603**
-- Test R^2: **0.449**
-- That’s a **25.8%** reduction in RMSE over the null.
-- Best hyperparameters: penalty = 0.00113, mixture = 0.2. The model
-  retained **74** nonzero coefficients.
+- Null RMSE: **0.0789**
+- OLS RMSE (8 hand-picked features): **0.0588** (R² = 0.443)
+- Elastic Net RMSE (~80 features): **0.0551** (R² = 0.512)
+- That’s a **30.2%** reduction in RMSE over the null for the EN, and the
+  EN improves on the simple OLS by only 6.4% — most of the predictive
+  juice is in a few obvious features.
+- EN: penalty = 0.00113, mixture = 0.2 (mostly Ridge); **76** nonzero
+  coefficients.
+
+#### Three — the for-profit story
+
+Per-sector test RMSE is roughly 0.043 for nonprofits, 0.060 for publics,
+0.085 for for-profits. We tested whether sector-varying coefficients
+close the gap by adding `CONTROL × {C150, PCTPELL}` interactions to both
+models — RMSE moved by less than 0.001 in every sector. So the gap isn’t
+a missing-interaction problem, it’s a feature-coverage one: the publicly
+reported institutional characteristics in the College Scorecard don’t
+capture what drives variation in for-profit default rates.
 
 #### Final
 
-- Institution features reduce prediction error meaningfully relative to
-  the null, even after blocking school identity out of the test set (so
-  the gain is *generalization* across schools, not memorizing them).
+- Institutional features reduce prediction error meaningfully relative
+  to the null, even after blocking school identity out of the test set —
+  the gain is *generalization* across schools, not memorizing them.
 - Most of the variation in CDR3 is persistent at the school level (72.9%
-  ICC), which means the elastic net is recovering structural school
-  traits – not transient cohort effects.
-- Compared with the earlier random-split run (R^2 ~ 0.33, RMSE reduction
-  ~ 18%), the grouped split is the honest number. Random splits on panel
-  data overstate performance because the test set shares schools with
-  the training set.
+  ICC), so the elastic net is recovering structural school traits, not
+  transient cohort effects.
+- For-profits are predicted more by sector membership than by their own
+  features — that’s a finding, not a bug, and points to where future
+  work would need additional data.
+
+## The story
+
+Pulling the numbers together, here’s what the analysis is actually
+telling us.
+
+**Default rates are a structural property of schools, not of the
+economy.** The mixed-effects model splits CDR3 variance into **72.9%
+between schools** and only **1.8% between years** — a school with a high
+default rate this year had one last year and will have one next year.
+The remaining ~25% is within-school residual. So the question “what
+predicts default?” is really “what kind of school defaults?”
+
+**Institutional features explain about half of that between-school
+variation.** On schools held out of training entirely, the elastic net
+reaches **R² = 0.512** with all ~80 features, and a plain OLS on just
+eight hand-picked features gets to **R² = 0.443**. The EN beats the
+simple OLS by only **6.4%** in RMSE — the predictive signal is
+concentrated in obvious features (sector, degree level, Pell share,
+completion rate), and the long tail of 70+ extra features adds modest
+incremental signal. The chosen α = 0.2 (mostly Ridge) backs this up: the
+model spreads weight across many features instead of zeroing them out,
+which is what you’d expect when no single feature is doing heavy
+lifting.
+
+**The signs are intuitive and cohesive.** Completion rate and
+predominant-degree-level dominate the negative side of the OLS
+coefficient table — schools that graduate higher shares of their
+students at higher levels default less, and the t-statistics on these
+are above 40 in absolute value. Pell share, HBCU status, and federal
+loan exposure are the strongest positive predictors, all with t &gt; 25.
+The one mildly counterintuitive sign is `GRAD_DEBT_MDN`, which is
+*negatively* associated with default — schools with higher median
+graduate debt have lower default rates, because high-debt schools tend
+to be selective institutions whose graduates earn enough to repay.
+
+**But the average performance hides a sector split.** Per-sector test
+RMSE is roughly **0.041 for private nonprofits, 0.056 for publics, and
+0.074 for private for-profits** — for-profit error is about 1.8× the
+nonprofit error. The predicted-vs-actual plot shows the same thing
+visually: nonprofits and publics track actual CDR3 reasonably well, but
+for-profits with extreme actual default rates (50%+ in some cases) all
+get predicted somewhere in the 10–20% range. The model essentially
+predicts a sector-average for for-profits regardless of their own
+features.
+
+**Sector × feature interactions don’t fix it.** Letting the slopes on
+`C150` and `PCTPELL` vary by sector moved per-sector RMSE by less than
+0.001 in every cell of the four-model comparison table. So the
+for-profit gap isn’t a coefficient-misspecification problem; it’s a
+missing-feature problem. Whatever drives variation in for-profit default
+— financial health, recruitment practices, accreditation status,
+management quality — isn’t measured in the College Scorecard.
+
+**Bottom line.** “What institutional features predict graduate loan
+distress?” has two answers depending on who you’re asking about. For
+traditional institutions, the obvious features (completion, degree
+level, sector, Pell share, HBCU status) collectively predict about half
+of the cross-school variation, with signs that line up cleanly with the
+higher-ed literature. For-profits are predicted more by sector
+membership than by their own features, and the systematic residual there
+points to data the College Scorecard doesn’t collect.
